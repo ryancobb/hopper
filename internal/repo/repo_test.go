@@ -34,7 +34,7 @@ func (f *fakeGit) Run(dir string, args ...string) (string, error) {
 func TestResolveInRepo(t *testing.T) {
 	g := &fakeGit{avail: true, resp: map[string]string{
 		key("/repo/sub", "rev-parse", "--show-toplevel"): "/repo",
-		key("/repo", "branch", "--show-current"):          "main",
+		key("/repo", "branch", "--show-current"):         "main",
 	}}
 	r := NewResolver(g)
 	got := r.Resolve("/repo/sub")
@@ -67,7 +67,7 @@ func TestResolveGitUnavailable(t *testing.T) {
 func TestRootCachedBranchTTL(t *testing.T) {
 	g := &fakeGit{avail: true, resp: map[string]string{
 		key("/repo/sub", "rev-parse", "--show-toplevel"): "/repo",
-		key("/repo", "branch", "--show-current"):          "main",
+		key("/repo", "branch", "--show-current"):         "main",
 	}}
 	now := time.Unix(0, 0)
 	r := NewResolver(g)

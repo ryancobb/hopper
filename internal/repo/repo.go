@@ -66,24 +66,25 @@ func (r *Resolver) Resolve(cwd string) Info {
 
 func (r *Resolver) resolveRoot(cwd string) rootResult {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if v, ok := r.roots[cwd]; ok {
+		r.mu.Unlock()
 		return v
 	}
+	r.mu.Unlock()
+
 	var res rootResult
-	switch {
-	case !r.git.Available():
+	if !r.git.Available() {
 		// No git: treat the cwd as its own group, blank branch.
 		res = rootResult{root: cwd, name: filepath.Base(cwd), inRepo: true}
-	default:
-		out, err := r.git.Run(cwd, "rev-parse", "--show-toplevel")
-		if err == nil && out != "" {
-			res = rootResult{root: out, name: filepath.Base(out), inRepo: true}
-		} else {
-			res = rootResult{name: "(no repo)"}
-		}
+	} else if out, err := r.git.Run(cwd, "rev-parse", "--show-toplevel"); err == nil && out != "" {
+		res = rootResult{root: out, name: filepath.Base(out), inRepo: true}
+	} else {
+		res = rootResult{name: "(no repo)"}
 	}
+
+	r.mu.Lock()
 	r.roots[cwd] = res
+	r.mu.Unlock()
 	return res
 }
 
@@ -92,15 +93,19 @@ func (r *Resolver) resolveBranch(root string) string {
 		return ""
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if v, ok := r.branch[root]; ok && r.now().Before(v.exp) {
+		r.mu.Unlock()
 		return v.branch
 	}
+	r.mu.Unlock()
+
 	out, err := r.git.Run(root, "branch", "--show-current")
 	if err != nil {
 		out = ""
 	}
+	r.mu.Lock()
 	r.branch[root] = branchResult{branch: out, exp: r.now().Add(r.ttl)}
+	r.mu.Unlock()
 	return out
 }
 
