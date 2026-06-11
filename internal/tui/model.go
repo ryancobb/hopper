@@ -59,6 +59,11 @@ type loadedMsg struct {
 	items []Item
 	err   error
 }
+type focusMsg struct{ err error }
+type previewMsg struct {
+	text string
+	err  error
+}
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -85,6 +90,43 @@ func (m Model) loadCmd() tea.Cmd {
 	}
 }
 
+func focusCmd(term terminal.Terminal, pid int) tea.Cmd {
+	return func() tea.Msg {
+		h, ok := term.Locate(pid)
+		if !ok {
+			return focusMsg{err: terminal.ErrNotFound}
+		}
+		return focusMsg{err: term.Focus(h)}
+	}
+}
+
+func previewCmd(term terminal.Terminal, pid, lines int) tea.Cmd {
+	return func() tea.Msg {
+		if !term.Capabilities().Has(terminal.CapPreview) {
+			return previewMsg{err: terminal.ErrUnsupported}
+		}
+		h, ok := term.Locate(pid)
+		if !ok {
+			return previewMsg{err: terminal.ErrNotFound}
+		}
+		text, err := term.Preview(h, lines)
+		return previewMsg{text: text, err: err}
+	}
+}
+
+const previewLines = 6
+
+func (m Model) previewIfOpen() tea.Cmd {
+	if !m.showPreview || m.cursor < 0 || m.cursor >= len(m.rows) {
+		return nil
+	}
+	r := m.rows[m.cursor]
+	if r.Kind != RowSession {
+		return nil
+	}
+	return previewCmd(m.term, r.Item.Session.PID, previewLines)
+}
+
 // Init kicks off the first load and the refresh tick.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(m.loadCmd(), tickCmd())
@@ -97,9 +139,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case tickMsg:
-		return m, tea.Batch(m.loadCmd(), tickCmd())
+		cmds := []tea.Cmd{m.loadCmd(), tickCmd()}
+		if c := m.previewIfOpen(); c != nil {
+			cmds = append(cmds, c)
+		}
+		return m, tea.Batch(cmds...)
 	case loadedMsg:
 		m.applyLoaded(msg)
+		return m, nil
+	case focusMsg:
+		if msg.err != nil {
+			m.statusMsg = "focus: " + msg.err.Error()
+		} else {
+			m.statusMsg = ""
+		}
+		return m, nil
+	case previewMsg:
+		if msg.err != nil {
+			m.preview = "(preview unavailable)"
+		} else {
+			m.preview = msg.text
+		}
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -155,35 +215,112 @@ func (m *Model) moveCursor(d int) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.filtering {
+		return m.handleFilterKey(msg)
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
 	case "j", "down":
 		m.moveCursor(1)
-		return m, nil
+		return m, m.previewIfOpen()
 	case "k", "up":
 		m.moveCursor(-1)
-		return m, nil
+		return m, m.previewIfOpen()
 	case "g":
 		m.cursor = 0
 		m.syncSel()
-		return m, nil
+		return m, m.previewIfOpen()
 	case "G":
 		m.cursor = len(m.rows) - 1
 		m.clampCursor()
 		m.syncSel()
-		return m, nil
+		return m, m.previewIfOpen()
 	case "l":
 		m.expand()
 		return m, nil
 	case "h":
 		m.collapse()
 		return m, nil
+	case "enter":
+		return m.activate()
+	case "o":
+		return m.focusSelected()
+	case "p":
+		return m.togglePreview()
 	case "r":
 		return m, m.loadCmd()
+	case "/":
+		m.filtering = true
+		return m, nil
 	}
 	return m, nil
+}
+
+func (m Model) activate() (tea.Model, tea.Cmd) {
+	if m.cursor < 0 || m.cursor >= len(m.rows) {
+		return m, nil
+	}
+	if r := m.rows[m.cursor]; r.Kind == RowRepo {
+		m.collapsed[r.Group.Key] = !m.collapsed[r.Group.Key]
+		m.rebuildRows()
+		return m, nil
+	}
+	return m.focusSelected()
+}
+
+func (m Model) focusSelected() (tea.Model, tea.Cmd) {
+	if m.cursor < 0 || m.cursor >= len(m.rows) {
+		return m, nil
+	}
+	r := m.rows[m.cursor]
+	if r.Kind != RowSession {
+		return m, nil
+	}
+	if !m.term.Capabilities().Has(terminal.CapFocus) {
+		m.statusMsg = "focus unavailable in this terminal"
+		return m, nil
+	}
+	return m, focusCmd(m.term, r.Item.Session.PID)
+}
+
+func (m Model) togglePreview() (tea.Model, tea.Cmd) {
+	if !m.term.Capabilities().Has(terminal.CapPreview) {
+		m.statusMsg = "preview unavailable in this terminal"
+		return m, nil
+	}
+	m.showPreview = !m.showPreview
+	if !m.showPreview {
+		m.preview = ""
+		return m, nil
+	}
+	return m, m.previewIfOpen()
+}
+
+func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		m.filtering = false
+		return m, nil
+	case "esc":
+		m.filtering = false
+		m.filter = ""
+		m.rebuildRows()
+		return m, nil
+	case "backspace":
+		if r := []rune(m.filter); len(r) > 0 {
+			m.filter = string(r[:len(r)-1])
+			m.rebuildRows()
+		}
+		return m, nil
+	default:
+		if len(msg.Runes) > 0 {
+			m.filter += string(msg.Runes)
+			m.rebuildRows()
+		}
+		return m, nil
+	}
 }
 
 func (m *Model) expand() {

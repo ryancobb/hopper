@@ -45,8 +45,8 @@ func (f *fakeTerm) Preview(h terminal.Handle, n int) (string, error) {
 
 func twoSessionModel() Model {
 	loader := fakeLoader{sessions: []session.Session{
-		{ID: "s1", PID: 1, CWD: "/a", Status: "idle", StatusUpdatedAt: time.Now()},
-		{ID: "s2", PID: 2, CWD: "/a", Status: "busy", StatusUpdatedAt: time.Now()},
+		{ID: "s1", PID: 1, CWD: "/a", Status: "busy", StatusUpdatedAt: time.Now()},
+		{ID: "s2", PID: 2, CWD: "/a", Status: "idle", StatusUpdatedAt: time.Now()},
 	}}
 	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa", Branch: "main"}}}
 	names := fakeNamer{names: map[string]string{"s1": "first", "s2": "second"}}
@@ -98,5 +98,77 @@ func TestCollapseHidesSessions(t *testing.T) {
 	m = next.(Model)
 	if len(m.rows) != 1 {
 		t.Fatalf("after collapse want 1 row, got %d", len(m.rows))
+	}
+}
+
+func TestEnterFocusesSession(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	// move to first session row (index 1)
+	m.cursor = 1
+	m.syncSel()
+	_, cmd := m.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("enter on session should return a focus command")
+	}
+	msg := cmd() // execute the focus command
+	if fm, ok := msg.(focusMsg); !ok || fm.err != nil {
+		t.Fatalf("focus msg = %#v", msg)
+	}
+	term := m.term.(*fakeTerm)
+	if len(term.focused) != 1 || term.focused[0].(int) != 11 {
+		t.Fatalf("expected focus on handle 11, got %v", term.focused)
+	}
+}
+
+func TestEnterOnRepoTogglesCollapse(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 0 // repo row
+	next, _ := m.Update(key("enter"))
+	m = next.(Model)
+	if len(m.rows) != 1 {
+		t.Fatalf("enter on repo should collapse, rows=%d", len(m.rows))
+	}
+}
+
+func TestTogglePreviewRequiresCapability(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.syncSel()
+	next, cmd := m.Update(key("p"))
+	m = next.(Model)
+	if !m.showPreview || cmd == nil {
+		t.Fatalf("preview should open with a command")
+	}
+
+	// backend without preview capability
+	m2 := applyLoad(twoSessionModel())
+	m2.term = &fakeTerm{caps: terminal.CapFocus}
+	next2, _ := m2.Update(key("p"))
+	m2 = next2.(Model)
+	if m2.showPreview || m2.statusMsg == "" {
+		t.Fatalf("preview should be refused without capability")
+	}
+}
+
+func TestFilterMode(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	// names: s1="first", s2="second"; filter "seco" should keep only s2
+	next, _ := m.Update(key("/"))
+	m = next.(Model)
+	if !m.filtering {
+		t.Fatal("should be in filter mode")
+	}
+	for _, r := range "seco" {
+		next, _ = m.Update(key(string(r)))
+		m = next.(Model)
+	}
+	// 1 repo + 1 matching session
+	if len(m.rows) != 2 {
+		t.Fatalf("filtered rows=%d", len(m.rows))
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.filtering || m.filter != "" || len(m.rows) != 3 {
+		t.Fatalf("esc should clear filter; rows=%d filtering=%v", len(m.rows), m.filtering)
 	}
 }
