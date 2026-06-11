@@ -1,0 +1,71 @@
+package terminal
+
+import (
+	"strings"
+	"testing"
+)
+
+const lsFixture = `[
+ {"id":1,"tabs":[
+   {"id":1,"windows":[
+     {"id":10,"foreground_processes":[{"pid":97201},{"pid":97046}]},
+     {"id":2,"foreground_processes":[{"pid":9801}]}
+   ]},
+   {"id":3,"windows":[
+     {"id":4,"foreground_processes":[{"pid":42210}]}
+   ]}
+ ]}
+]`
+
+func fakeKitty(out string, capture *[][]string) *Kitty {
+	return &Kitty{run: func(args ...string) ([]byte, error) {
+		if capture != nil {
+			*capture = append(*capture, args)
+		}
+		return []byte(out), nil
+	}}
+}
+
+func TestKittyLocate(t *testing.T) {
+	k := fakeKitty(lsFixture, nil)
+	h, ok := k.Locate(97046)
+	if !ok || h.(int) != 10 {
+		t.Fatalf("want window 10, got %v ok=%v", h, ok)
+	}
+	h, ok = k.Locate(42210)
+	if !ok || h.(int) != 4 {
+		t.Fatalf("want window 4, got %v ok=%v", h, ok)
+	}
+	if _, ok := k.Locate(999); ok {
+		t.Fatal("999 should not be found")
+	}
+}
+
+func TestKittyFocusCommand(t *testing.T) {
+	var calls [][]string
+	k := fakeKitty("", &calls)
+	if err := k.Focus(10); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(calls[0], " ")
+	if got != "focus-window --match id:10" {
+		t.Fatalf("focus args: %q", got)
+	}
+}
+
+func TestKittyPreviewTail(t *testing.T) {
+	text := "line1\nline2\n\nline3\nline4\n\n\n"
+	var calls [][]string
+	k := fakeKitty(text, &calls)
+	out, err := k.Preview(4, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "line3\nline4" {
+		t.Fatalf("preview tail: %q", out)
+	}
+	got := strings.Join(calls[0], " ")
+	if got != "get-text --match id:4 --extent screen" {
+		t.Fatalf("preview args: %q", got)
+	}
+}
