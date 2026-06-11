@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 const footer = "j/k move · h/l fold · Enter focus · p preview · / filter · r refresh · q quit"
@@ -80,17 +82,33 @@ func (m Model) renderRow(i int, r Row) string {
 		if m.collapsed[r.Group.Key] {
 			caret = "▸"
 		}
+		st := statusStyle(r.Group.Kind)
 		return fmt.Sprintf("%s%s %-30s %s %s",
-			cursor, caret, r.Group.Label, icon(r.Group.Kind), r.Group.Kind.Label())
+			cursor, caret, r.Group.Label,
+			st.Render(icon(r.Group.Kind)), st.Render(r.Group.Kind.Label()))
 	}
 	it := r.Item
-	line := fmt.Sprintf("%s    %-4s  %-32s %-14s %-8s %s",
+	statusField := statusStyle(it.Kind).Render(fmt.Sprintf("%-8s", statusText(it)))
+	line := fmt.Sprintf("%s    %-4s  %-32s %-14s %s %s",
 		cursor, short(it.Session.ID), it.Name, it.Repo.Branch,
-		statusText(it), shortAge(time.Since(it.Session.StatusUpdatedAt)))
+		statusField, shortAge(time.Since(it.Session.StatusUpdatedAt)))
 	if it.Kind == StatusBlocked && it.Session.WaitingFor != "" {
 		line += " (" + it.Session.WaitingFor + ")"
 	}
 	return line
+}
+
+func statusStyle(k StatusKind) lipgloss.Style {
+	switch k {
+	case StatusWorking:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	case StatusBlocked:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	case StatusIdle:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	default:
+		return lipgloss.NewStyle()
+	}
 }
 
 // statusText shows the raw status verbatim for unknown kinds, so new Claude Code
