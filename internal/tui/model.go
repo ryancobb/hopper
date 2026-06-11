@@ -333,9 +333,6 @@ func (m *Model) expand() {
 	}
 }
 
-// View renders the model. A full implementation is provided in Task 10 (view.go).
-func (m Model) View() string { return "" }
-
 func (m *Model) collapse() {
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
 		return

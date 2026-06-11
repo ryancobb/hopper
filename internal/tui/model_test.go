@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -170,5 +171,23 @@ func TestFilterMode(t *testing.T) {
 	m = next.(Model)
 	if m.filtering || m.filter != "" || len(m.rows) != 3 {
 		t.Fatalf("esc should clear filter; rows=%d filtering=%v", len(m.rows), m.filtering)
+	}
+}
+
+func TestViewContents(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	out := m.View()
+	for _, want := range []string{"fake", "aaa", "working", "idle", "q quit"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("view missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestViewEmpty(t *testing.T) {
+	loader := fakeLoader{}
+	m := applyLoad(New(loader, fakeRepos{}, fakeNamer{}, &fakeTerm{}))
+	if !strings.Contains(m.View(), "no live sessions") {
+		t.Errorf("empty view: %s", m.View())
 	}
 }
