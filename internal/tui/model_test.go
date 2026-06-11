@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"cctop/internal/repo"
 	"cctop/internal/session"
 	"cctop/internal/terminal"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type fakeLoader struct {
@@ -32,7 +32,7 @@ type fakeTerm struct {
 	preview string
 }
 
-func (f *fakeTerm) Name() string                     { return "fake" }
+func (f *fakeTerm) Name() string                      { return "fake" }
 func (f *fakeTerm) Capabilities() terminal.Capability { return f.caps }
 func (f *fakeTerm) Locate(pid int) (terminal.Handle, bool) {
 	h, ok := f.located[pid]
