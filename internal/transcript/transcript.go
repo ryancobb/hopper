@@ -1,4 +1,5 @@
-// Package transcript derives a session display name from its first user prompt.
+// Package transcript derives session display data (title and first prompt)
+// from Claude Code transcript JSONL files.
 package transcript
 
 import (
@@ -12,68 +13,6 @@ import (
 	"sync"
 )
 
-// Namer finds and caches session display names.
-type Namer struct {
-	projectsDir string
-	maxLen      int
-	glob        func(pattern string) ([]string, error)
-	open        func(path string) (io.ReadCloser, error)
-
-	mu    sync.Mutex
-	cache map[string]string
-}
-
-// NewNamer builds a Namer over ~/.claude/projects.
-func NewNamer(projectsDir string) *Namer {
-	return &Namer{
-		projectsDir: projectsDir,
-		maxLen:      40,
-		glob:        filepath.Glob,
-		open:        func(p string) (io.ReadCloser, error) { return os.Open(p) },
-		cache:       map[string]string{},
-	}
-}
-
-// Name returns the truncated first prompt for a session, or "" if none yet.
-// Only non-empty results are cached, so a just-started session is retried.
-func (n *Namer) Name(sessionID string) string {
-	n.mu.Lock()
-	if v, ok := n.cache[sessionID]; ok {
-		n.mu.Unlock()
-		return v
-	}
-	n.mu.Unlock()
-
-	name := n.lookup(sessionID)
-	if name != "" {
-		n.mu.Lock()
-		n.cache[sessionID] = name
-		n.mu.Unlock()
-	}
-	return name
-}
-
-func (n *Namer) lookup(sessionID string) string {
-	matches, err := n.glob(filepath.Join(n.projectsDir, "*", sessionID+".jsonl"))
-	if err != nil || len(matches) == 0 {
-		return ""
-	}
-	f, err := n.open(matches[0])
-	if err != nil {
-		return ""
-	}
-	defer func() { _ = f.Close() }()
-
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	for sc.Scan() {
-		if text, ok := firstPromptText(sc.Bytes()); ok {
-			return truncate(text, n.maxLen)
-		}
-	}
-	return ""
-}
-
 type entry struct {
 	Type    string `json:"type"`
 	IsMeta  bool   `json:"isMeta"`
@@ -81,21 +20,6 @@ type entry struct {
 	Message struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
-}
-
-func firstPromptText(line []byte) (string, bool) {
-	var e entry
-	if err := json.Unmarshal(line, &e); err != nil {
-		return "", false
-	}
-	if e.Type != "user" || e.IsMeta {
-		return "", false
-	}
-	text := strings.TrimSpace(extractText(e.Message.Content))
-	if text == "" || strings.HasPrefix(text, "<") || strings.HasPrefix(text, "/") {
-		return "", false
-	}
-	return text, true
 }
 
 func extractText(raw json.RawMessage) string {
@@ -220,8 +144,8 @@ func (r *Reader) Info(sessionID string) Info {
 		st.title, st.seeded = res.title, true
 	}
 	if offset == 0 {
-		// The whole file was scanned; the first prompt is authoritative.
-		st.firstPrompt, st.seeded = res.firstPrompt, true
+		// The whole file was scanned: title and first prompt are authoritative.
+		st.title, st.firstPrompt, st.seeded = res.title, res.firstPrompt, true
 	} else if !st.seeded {
 		// Long transcript first seen mid-stream with no title in its tail:
 		// one full scan resolves the title / first-prompt fallback.

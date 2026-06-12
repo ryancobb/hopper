@@ -15,7 +15,7 @@ import (
 // Session is a single live session from a Source, normalized for display.
 type Session struct {
 	ID         string
-	Name       string // human-readable label, e.g. derived from the first prompt
+	Name       string // human-readable label, e.g. the provider's session title
 	CWD        string
 	PID        int // 0 when the session has no addressable local process
 	Kind       status.Kind

@@ -1,85 +1,11 @@
 package transcript
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
 )
-
-func newTestNamer(file string, body string) (*Namer, *int) {
-	opens := 0
-	n := NewNamer("/proj")
-	n.glob = func(pattern string) ([]string, error) {
-		if file == "" {
-			return nil, nil
-		}
-		return []string{file}, nil
-	}
-	n.open = func(p string) (io.ReadCloser, error) {
-		opens++
-		return io.NopCloser(strings.NewReader(body)), nil
-	}
-	return n, &opens
-}
-
-func TestNameFirstRealPrompt(t *testing.T) {
-	body := strings.Join([]string{
-		`{"type":"system","content":"x"}`,
-		`{"type":"user","isMeta":true,"message":{"content":"<meta>"}}`,
-		`{"type":"user","message":{"content":"lets work on the billing bug"}}`,
-		`{"type":"user","message":{"content":"second message"}}`,
-	}, "\n")
-	n, _ := newTestNamer("/proj/abc/sid.jsonl", body)
-	if got := n.Name("sid"); got != "lets work on the billing bug" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestNameSkipsSlashAndAngle(t *testing.T) {
-	body := strings.Join([]string{
-		`{"type":"user","message":{"content":"<command-message>/clear</command-message>"}}`,
-		`{"type":"user","message":{"content":"/clear"}}`,
-	}, "\n")
-	n, _ := newTestNamer("/proj/abc/sid.jsonl", body)
-	if got := n.Name("sid"); got != "" {
-		t.Fatalf("want empty, got %q", got)
-	}
-}
-
-func TestNameContentArray(t *testing.T) {
-	body := `{"type":"user","message":{"content":[{"type":"text","text":"hello from array"}]}}`
-	n, _ := newTestNamer("/proj/abc/sid.jsonl", body)
-	if got := n.Name("sid"); got != "hello from array" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestNameTruncates(t *testing.T) {
-	long := strings.Repeat("a", 100)
-	body := `{"type":"user","message":{"content":"` + long + `"}}`
-	n, _ := newTestNamer("/proj/abc/sid.jsonl", body)
-	got := n.Name("sid")
-	if len([]rune(got)) != 40 || !strings.HasSuffix(got, "…") {
-		t.Fatalf("got len=%d %q", len([]rune(got)), got)
-	}
-}
-
-func TestNameCachesOnlyHits(t *testing.T) {
-	body := `{"type":"user","message":{"content":"cached prompt"}}`
-	n, opens := newTestNamer("/proj/abc/sid.jsonl", body)
-	n.Name("sid")
-	n.Name("sid")
-	if *opens != 1 {
-		t.Fatalf("expected 1 open (cached), got %d", *opens)
-	}
-}
-
-func TestNameNoMatchNotCached(t *testing.T) {
-	n, _ := newTestNamer("", "")
-	if got := n.Name("sid"); got != "" {
-		t.Fatalf("want empty, got %q", got)
-	}
-}
 
 type fakeFile struct{ *strings.Reader }
 
@@ -226,5 +152,32 @@ func TestInfoTailReadAndSeed(t *testing.T) {
 	}
 	if *opens != 3 { // already seeded: growth costs one tail read
 		t.Fatalf("opens = %d, want 3", *opens)
+	}
+}
+
+// errAfterFile reads body then fails, simulating an I/O error mid-scan.
+type errAfterFile struct{ *strings.Reader }
+
+func (errAfterFile) Close() error { return nil }
+func (f errAfterFile) Read(p []byte) (int, error) {
+	n, err := f.Reader.Read(p)
+	if err == io.EOF {
+		return n, errors.New("disk gone")
+	}
+	return n, err
+}
+
+func TestInfoKeepsCacheOnScanFailure(t *testing.T) {
+	body := `{"type":"ai-title","aiTitle":"good title"}`
+	r, _ := newTestReader(&body)
+	if got := r.Info("sid"); got.Title != "good title" {
+		t.Fatalf("Title = %q, want %q", got.Title, "good title")
+	}
+	body += "\n" + `{"type":"ai-title","aiTitle":"unseen title"}`
+	r.open = func(string) (io.ReadSeekCloser, error) {
+		return errAfterFile{strings.NewReader(body)}, nil
+	}
+	if got := r.Info("sid"); got.Title != "good title" {
+		t.Fatalf("Title = %q, want cached %q after failed scan", got.Title, "good title")
 	}
 }
