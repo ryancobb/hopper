@@ -1,12 +1,12 @@
-# Live Last-Message Rows Implementation Plan
+# AI-Title Session Names Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Label session rows with Claude's own session title (latest `ai-title` transcript entry) and show each session's latest assistant message on a live continuation line, refreshed by the existing 1 Hz poll.
+**Goal:** Label session rows with Claude's own session title (latest `ai-title` transcript entry), refreshed live as Claude re-titles the session, falling back to the first prompt and then a session-ID prefix.
 
-**Architecture:** `internal/transcript` is rewritten from a one-shot first-prompt `Namer` into a `Reader` that returns `{Title, FirstPrompt, LastMessage}` per session, re-reading a transcript only when its file size changes and reading only a bounded tail once the title is known. `internal/claude` maps that into `source.Session` (new `LastMessage` field, `Name` = title → first prompt → id prefix). `internal/tui/view.go` generalizes the existing blocked-reason continuation line to all sessions, with the blocked reason taking precedence.
+**Architecture:** `internal/transcript` is rewritten from a one-shot first-prompt `Namer` into a `Reader` that returns `{Title, FirstPrompt}` per session, re-reading a transcript only when its file size changes and reading only a bounded tail once the title is known. `internal/claude` resolves `source.Session.Name` via title → first prompt → id prefix. No TUI or source-model changes.
 
-**Tech Stack:** Go 1.24, bubbletea/lipgloss TUI, stdlib only (no new dependencies). Spec: `docs/superpowers/specs/2026-06-11-live-last-message-design.md`.
+**Tech Stack:** Go 1.24, stdlib only (no new dependencies). Spec: `docs/superpowers/specs/2026-06-11-ai-title-session-names-design.md`.
 
 ---
 
@@ -14,10 +14,9 @@
 
 - Claude Code writes one JSONL file per session at `~/.claude/projects/<munged-project-path>/<session-id>.jsonl`. Relevant line shapes:
   - `{"type":"ai-title","aiTitle":"Stream last message...","sessionId":"..."}` — appended repeatedly as Claude re-titles the session; **the last one is the current title**.
-  - `{"type":"assistant","message":{"content":[{"type":"text","text":"..."},{"type":"tool_use",...}]}}` — assistant turns; tool-call-only entries have no `text` parts.
   - `{"type":"user","isMeta":false,"message":{"content":"..."}}` — user prompts; `content` is either a string or an array of `{type,text}` parts.
 - All tests run with `go test ./...` from the repo root. Format with `gofmt -w` before committing.
-- The TUI polls sources every second (`internal/tui/model.go`), so freshness comes for free; the transcript layer just has to be cheap per call.
+- The TUI polls sources every second (`internal/tui/model.go`), so title freshness comes for free; the transcript layer just has to be cheap per call.
 
 ### File map
 
@@ -25,11 +24,8 @@
 |---|---|
 | `internal/transcript/transcript.go` | Rewrite: `Namer` → `Reader` with `Info(sessionID) Info` |
 | `internal/transcript/transcript_test.go` | New `Reader` tests; old `Namer` tests deleted in Task 3 |
-| `internal/source/source.go` | Add `Session.LastMessage` field |
-| `internal/claude/claude.go` | Use `Reader`; `displayName` fallback chain; populate `LastMessage` |
+| `internal/claude/claude.go` | Use `Reader`; `displayName` fallback chain |
 | `internal/claude/claude_test.go` | Replace `fakeNamer` with `fakeReader`; add fallback tests |
-| `internal/tui/view.go` | Continuation line for all sessions; reason wins |
-| `internal/tui/view_test.go` | New continuation-line tests |
 
 ---
 
@@ -80,28 +76,6 @@ func TestInfoTitleLastWins(t *testing.T) {
 	}
 }
 
-func TestInfoLastAssistantTextWins(t *testing.T) {
-	body := strings.Join([]string{
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"first answer"}]}}`,
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"second answer"}]}}`,
-	}, "\n")
-	r, _ := newTestReader(&body)
-	if got := r.Info("sid"); got.LastMessage != "second answer" {
-		t.Fatalf("LastMessage = %q, want %q", got.LastMessage, "second answer")
-	}
-}
-
-func TestInfoSkipsToolOnlyAssistant(t *testing.T) {
-	body := strings.Join([]string{
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"real text"}]}}`,
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`,
-	}, "\n")
-	r, _ := newTestReader(&body)
-	if got := r.Info("sid"); got.LastMessage != "real text" {
-		t.Fatalf("LastMessage = %q, want %q", got.LastMessage, "real text")
-	}
-}
-
 func TestInfoFirstPromptRules(t *testing.T) {
 	body := strings.Join([]string{
 		`{"type":"user","isMeta":true,"message":{"content":"<meta>"}}`,
@@ -115,11 +89,11 @@ func TestInfoFirstPromptRules(t *testing.T) {
 	}
 }
 
-func TestInfoNormalizesLastMessageToOneLine(t *testing.T) {
-	body := `{"type":"assistant","message":{"content":[{"type":"text","text":"\n\nFixed   the\tbug.\nDetails follow."}]}}`
+func TestInfoFirstPromptContentArray(t *testing.T) {
+	body := `{"type":"user","message":{"content":[{"type":"text","text":"hello from array"}]}}`
 	r, _ := newTestReader(&body)
-	if got := r.Info("sid"); got.LastMessage != "Fixed the bug." {
-		t.Fatalf("LastMessage = %q, want %q", got.LastMessage, "Fixed the bug.")
+	if got := r.Info("sid"); got.FirstPrompt != "hello from array" {
+		t.Fatalf("FirstPrompt = %q", got.FirstPrompt)
 	}
 }
 
@@ -156,13 +130,11 @@ Add to `internal/transcript/transcript.go` (the `Namer`, `firstPromptText`, `ext
 type Info struct {
 	Title       string // latest ai-title entry, "" if none yet
 	FirstPrompt string // first real user prompt, for fallback naming
-	LastMessage string // latest assistant message text, normalized to one line
 }
 
 const (
 	defaultTailBytes = 256 * 1024
 	nameMax          = 40
-	lastMessageMax   = 200
 )
 
 // Reader derives Infos from transcript JSONL files.
@@ -210,13 +182,12 @@ func (r *Reader) Info(sessionID string) Info {
 	return Info{
 		Title:       truncate(res.title, nameMax),
 		FirstPrompt: truncate(res.firstPrompt, nameMax),
-		LastMessage: truncate(res.last, lastMessageMax),
 	}
 }
 
 // result accumulates what one scan pass saw.
 type result struct {
-	title, firstPrompt, last string
+	title, firstPrompt string
 }
 
 // scanFrom parses transcript lines starting at offset; a partial first line at
@@ -255,8 +226,8 @@ func (r *Reader) scanFrom(path string, offset int64) (result, bool) {
 	return res, true
 }
 
-// processLine folds one JSONL line into res: ai-titles and assistant texts
-// last-win, the first real user prompt sticks.
+// processLine folds one JSONL line into res: ai-titles last-win, the first
+// real user prompt sticks.
 func processLine(line []byte, res *result) {
 	var e entry
 	if err := json.Unmarshal(line, &e); err != nil {
@@ -266,10 +237,6 @@ func processLine(line []byte, res *result) {
 	case "ai-title":
 		if t := strings.TrimSpace(e.AITitle); t != "" {
 			res.title = t
-		}
-	case "assistant":
-		if t := oneLine(extractText(e.Message.Content)); t != "" {
-			res.last = t
 		}
 	case "user":
 		if res.firstPrompt != "" || e.IsMeta {
@@ -281,16 +248,6 @@ func processLine(line []byte, res *result) {
 		}
 		res.firstPrompt = t
 	}
-}
-
-// oneLine reduces s to its first non-empty line with whitespace collapsed.
-func oneLine(s string) string {
-	for _, ln := range strings.Split(s, "\n") {
-		if fields := strings.Fields(ln); len(fields) > 0 {
-			return strings.Join(fields, " ")
-		}
-	}
-	return ""
 }
 ```
 
@@ -319,7 +276,7 @@ Expected: all PASS (new `TestInfo*` plus the old `TestName*`).
 ```bash
 gofmt -w internal/transcript/
 git add internal/transcript/
-git commit -m "feat(transcript): Reader deriving title, first prompt, last message"
+git commit -m "feat(transcript): Reader deriving session title and first prompt"
 ```
 
 ---
@@ -349,14 +306,14 @@ func TestInfoCachesUnchangedFile(t *testing.T) {
 }
 
 func TestInfoRereadsOnGrowth(t *testing.T) {
-	body := `{"type":"assistant","message":{"content":[{"type":"text","text":"one"}]}}`
+	body := `{"type":"ai-title","aiTitle":"old title"}`
 	r, opens := newTestReader(&body)
-	if got := r.Info("sid"); got.LastMessage != "one" {
-		t.Fatalf("LastMessage = %q, want %q", got.LastMessage, "one")
+	if got := r.Info("sid"); got.Title != "old title" {
+		t.Fatalf("Title = %q, want %q", got.Title, "old title")
 	}
-	body += "\n" + `{"type":"assistant","message":{"content":[{"type":"text","text":"two"}]}}`
-	if got := r.Info("sid"); got.LastMessage != "two" {
-		t.Fatalf("LastMessage = %q, want %q", got.LastMessage, "two")
+	body += "\n" + `{"type":"ai-title","aiTitle":"new title"}`
+	if got := r.Info("sid"); got.Title != "new title" {
+		t.Fatalf("Title = %q, want %q (title must refresh on growth)", got.Title, "new title")
 	}
 	if *opens != 2 {
 		t.Fatalf("opens = %d, want 2", *opens)
@@ -378,20 +335,19 @@ func TestInfoEmptyTranscriptRetried(t *testing.T) {
 // TestInfoTailReadAndSeed drives the bounded-tail path: the first read's tail
 // window starts mid-line (the partial line must be discarded) and contains no
 // ai-title, forcing one full scan to seed the title. After seeding, growth
-// costs a single tail read, and a tail window with no assistant text keeps the
-// cached last message.
+// costs a single tail read, which picks up a newly appended title.
 func TestInfoTailReadAndSeed(t *testing.T) {
-	pad := strings.Repeat("x", 200)
+	pad := strings.Repeat("x", 300)
 	body := strings.Join([]string{
 		`{"type":"ai-title","aiTitle":"early title"}`,
+		`{"type":"user","message":{"content":"the prompt"}}`,
 		`{"type":"system","content":"` + pad + `"}`,
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"tail msg"}]}}`,
 	}, "\n")
 	r, opens := newTestReader(&body)
 	r.tailBytes = 100
 
 	got := r.Info("sid")
-	if got.Title != "early title" || got.LastMessage != "tail msg" {
+	if got.Title != "early title" || got.FirstPrompt != "the prompt" {
 		t.Fatalf("got %+v", got)
 	}
 	if *opens != 2 { // one tail read + one full scan to seed the title
@@ -403,8 +359,8 @@ func TestInfoTailReadAndSeed(t *testing.T) {
 	if got.Title != "newer title" {
 		t.Fatalf("Title = %q, want %q", got.Title, "newer title")
 	}
-	if got.LastMessage != "tail msg" { // new tail window has no assistant text; cache holds
-		t.Fatalf("LastMessage = %q, want %q", got.LastMessage, "tail msg")
+	if got.FirstPrompt != "the prompt" { // cached from the seeding full scan
+		t.Fatalf("FirstPrompt = %q, want %q", got.FirstPrompt, "the prompt")
 	}
 	if *opens != 3 { // already seeded: growth costs one tail read
 		t.Fatalf("opens = %d, want 3", *opens)
@@ -415,7 +371,7 @@ func TestInfoTailReadAndSeed(t *testing.T) {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/transcript/ -run TestInfo -v`
-Expected: `TestInfoCachesUnchangedFile` FAILS (opens = 2), `TestInfoTailReadAndSeed` FAILS (opens = 1, full scan every call). The others pass already.
+Expected: `TestInfoCachesUnchangedFile` FAILS (opens = 2) and `TestInfoTailReadAndSeed` FAILS (Task 1's Info full-scans every call, so opens counts differ). The other two pass already.
 
 - [ ] **Step 3: Add per-session state and rewrite Info**
 
@@ -443,7 +399,7 @@ type state struct {
 	seeded bool // title/first prompt resolved: full scan done or a title seen
 	size   int64
 
-	title, firstPrompt, last string
+	title, firstPrompt string
 }
 ```
 
@@ -485,9 +441,6 @@ func (r *Reader) Info(sessionID string) Info {
 	if res.title != "" {
 		st.title, st.seeded = res.title, true
 	}
-	if res.last != "" {
-		st.last = res.last
-	}
 	if offset == 0 {
 		// The whole file was scanned; the first prompt is authoritative.
 		st.firstPrompt, st.seeded = res.firstPrompt, true
@@ -505,7 +458,6 @@ func (s *state) info() Info {
 	return Info{
 		Title:       truncate(s.title, nameMax),
 		FirstPrompt: truncate(s.firstPrompt, nameMax),
-		LastMessage: truncate(s.last, lastMessageMax),
 	}
 }
 ```
@@ -525,11 +477,11 @@ git commit -m "feat(transcript): size-change cache, bounded tail reads, title se
 
 ---
 
-### Task 3: wire Reader into source/claude, delete Namer
+### Task 3: wire Reader into claude, delete Namer
 
 **Files:**
-- Modify: `internal/source/source.go`
 - Modify: `internal/claude/claude.go`
+- Modify: `internal/source/source.go` (one comment)
 - Modify: `internal/transcript/transcript.go` (deletions)
 - Test: `internal/claude/claude_test.go`, `internal/transcript/transcript_test.go` (deletions)
 
@@ -547,20 +499,11 @@ In `TestSessionsMapsFields`, replace the `namer:` line of the `Source` literal w
 
 ```go
 		reader: fakeReader{infos: map[string]transcript.Info{
-			"abc": {Title: "do the thing", LastMessage: "running tests"},
+			"abc": {Title: "do the thing"},
 		}},
 ```
 
-and extend the assertion to cover `LastMessage`:
-
-```go
-	if w.ID != "abc" || w.Name != "do the thing" || w.CWD != "/x" || w.PID != 7 ||
-		w.Kind != status.Blocked || w.RawStatus != "waiting" ||
-		w.WaitingFor != "permission prompt" || !w.UpdatedAt.Equal(now) ||
-		w.LastMessage != "running tests" {
-		t.Fatalf("unexpected mapping: %+v", w)
-	}
-```
+(the existing assertion on `w.Name != "do the thing"` then exercises the title path unchanged).
 
 New test:
 
@@ -587,17 +530,11 @@ func TestDisplayName(t *testing.T) {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/claude/ -v`
-Expected: compile error — `Source` has no field `reader`, `displayName` undefined, `LastMessage` undefined.
+Expected: compile error — `Source` has no field `reader`, `displayName` undefined.
 
 - [ ] **Step 3: Implement the wiring**
 
-In `internal/source/source.go`, add the field to `Session` (after `Name`):
-
-```go
-	LastMessage string // the session's latest assistant message, one line, if known
-```
-
-In `internal/claude/claude.go`, replace the `namer` interface, `Source` struct, `New`, and the loop body:
+In `internal/claude/claude.go`, replace the `namer` interface, `Source` struct, and `New`:
 
 ```go
 // reader derives display data from a session's transcript. Satisfied by
@@ -622,23 +559,10 @@ func New(sessionsDir, projectsDir string) *Source {
 }
 ```
 
-In `Sessions`, replace the `source.Session` literal:
+In `Sessions`, replace the `Name:` line of the `source.Session` literal with:
 
 ```go
-	for _, sess := range sessions {
-		info := s.reader.Info(sess.ID)
-		out = append(out, source.Session{
-			ID:          sess.ID,
-			Name:        displayName(info, sess.ID),
-			LastMessage: info.LastMessage,
-			CWD:         sess.CWD,
-			PID:         sess.PID,
-			Kind:        kindOf(sess.Status),
-			RawStatus:   sess.Status,
-			WaitingFor:  sess.WaitingFor,
-			UpdatedAt:   sess.StatusUpdatedAt,
-		})
-	}
+			Name:       displayName(s.reader.Info(sess.ID), sess.ID),
 ```
 
 Add at the bottom of `claude.go`:
@@ -665,138 +589,33 @@ func displayName(info transcript.Info, id string) string {
 In `internal/transcript/transcript.go`, delete the `Namer` type, `NewNamer`, `Name`, `lookup`, and `firstPromptText` (its user-prompt rules now live in `processLine`). Update the package doc:
 
 ```go
-// Package transcript derives session display data (title, first prompt, last
-// assistant message) from Claude Code transcript JSONL files.
+// Package transcript derives session display data (title and first prompt)
+// from Claude Code transcript JSONL files.
 package transcript
 ```
 
 In `internal/transcript/transcript_test.go`, delete `newTestNamer` and the six `TestName*` tests. Update the `Name` comment in `internal/source/source.go`:
 
 ```go
-	Name        string // human-readable label, e.g. the provider's session title
+	Name       string // human-readable label, e.g. the provider's session title
 ```
 
 - [ ] **Step 5: Run the full test suite**
 
-Run: `go test ./...`
-Expected: all PASS; `go vet ./...` clean (catches any leftover `Namer` references).
+Run: `go test ./... && go vet ./...`
+Expected: all tests PASS; vet clean (catches any leftover `Namer` references).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 gofmt -w internal/
-git add internal/ 
-git commit -m "feat(claude): session name from ai-title with fallbacks, expose last message"
+git add internal/
+git commit -m "feat(claude): session name from ai-title with fallbacks"
 ```
 
 ---
 
-### Task 4: TUI continuation line for all sessions
-
-**Files:**
-- Modify: `internal/tui/view.go:119-122` (View loop), `internal/tui/view.go:228-234` (renderReasonRow)
-- Test: `internal/tui/view_test.go`
-
-- [ ] **Step 1: Write the failing tests**
-
-Append to `internal/tui/view_test.go` (reuses `fakeSource`, `fakeRepos`, `fakeTerm`, `applyLoad` from the existing tests):
-
-```go
-func TestLastMessageContinuationLine(t *testing.T) {
-	now := time.Now()
-	src := fakeSource{label: "Claude Code", sessions: []source.Session{
-		{ID: "s1", PID: 1, CWD: "/a", Name: "busy one", Kind: status.Working,
-			LastMessage: "Now updating the renderer", UpdatedAt: now},
-		{ID: "s2", PID: 2, CWD: "/a", Name: "quiet one", Kind: status.Idle, UpdatedAt: now},
-	}}
-	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa", Branch: "main"}}}
-	m := applyLoad(New(src, repos, &fakeTerm{}))
-	m.width = 60
-
-	out := m.View()
-	if !strings.Contains(out, "↳ Now updating the renderer") {
-		t.Errorf("missing last-message continuation line:\n%s", out)
-	}
-	if got := strings.Count(out, "↳"); got != 1 {
-		t.Errorf("continuation lines = %d, want 1 (idle session has no message):\n%s", got, out)
-	}
-}
-
-func TestBlockedReasonWinsOverLastMessage(t *testing.T) {
-	now := time.Now()
-	src := fakeSource{label: "Claude Code", sessions: []source.Session{
-		{ID: "s1", PID: 1, CWD: "/a", Name: "stuck", Kind: status.Blocked,
-			WaitingFor: "permission: rm", LastMessage: "About to clean up", UpdatedAt: now},
-	}}
-	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa", Branch: "main"}}}
-	m := applyLoad(New(src, repos, &fakeTerm{}))
-	m.width = 60
-
-	out := m.View()
-	if !strings.Contains(out, "↳ permission: rm") {
-		t.Errorf("missing blocked-reason line:\n%s", out)
-	}
-	if strings.Contains(out, "About to clean up") {
-		t.Errorf("blocked session must show its reason, not the last message:\n%s", out)
-	}
-}
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `go test ./internal/tui/ -run "ContinuationLine|WinsOver" -v`
-Expected: `TestLastMessageContinuationLine` FAILS (no ↳ for the working session); `TestBlockedReasonWinsOverLastMessage` PASSES already (blocked path exists) — that is fine, it pins the precedence.
-
-- [ ] **Step 3: Implement**
-
-In `internal/tui/view.go`, replace the continuation block inside `View()`:
-
-```go
-			if r.Kind == RowSession {
-				if txt := continuationText(r.Item); txt != "" {
-					b.WriteString(m.renderContinuationRow(txt, w))
-					b.WriteByte('\n')
-				}
-			}
-```
-
-Replace `renderReasonRow` with:
-
-```go
-// continuationText is the dimmed line shown under a session row: the blocked
-// reason when present, otherwise the session's latest assistant message.
-func continuationText(it *Item) string {
-	if it.Session.Kind == status.Blocked && it.Session.WaitingFor != "" {
-		return it.Session.WaitingFor
-	}
-	return it.Session.LastMessage
-}
-
-// renderContinuationRow is the dimmed continuation line under a session row,
-// indented to the name column. It is display-only: it is not a Row, so the
-// cursor never lands on it.
-func (m Model) renderContinuationRow(text string, w int) string {
-	_, nameStart, _ := sessionLayout(w)
-	return strings.Repeat(" ", nameStart) + st.meta.Render(truncate("↳ "+text, w-nameStart))
-}
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `go test ./internal/tui/ -v`
-Expected: all PASS, including the pre-existing `TestBlockedReasonContinuationLine` (its working session has no `LastMessage`, so the ↳ count stays 1).
-
-- [ ] **Step 5: Commit**
-
-```bash
-gofmt -w internal/tui/
-git add internal/tui/
-git commit -m "feat(tui): live last-message continuation line on session rows"
-```
-
----
-
-### Task 5: final verification
+### Task 4: final verification
 
 - [ ] **Step 1: Full suite, vet, format check**
 
@@ -805,8 +624,8 @@ Expected: all tests PASS, vet clean, `gofmt -l` prints nothing.
 
 - [ ] **Step 2: Eyeball it live (manual)**
 
-Run: `go run . ` (in a terminal with live Claude Code sessions)
-Expected: rows labeled with Claude's session titles; a dimmed `↳` line under working sessions updating as they talk; blocked sessions still showing their reason.
+Run: `go run .` (in a terminal with live Claude Code sessions)
+Expected: rows labeled with Claude's session titles, updating as Claude re-titles sessions; blocked-reason lines unchanged.
 
 - [ ] **Step 3: Commit any stragglers**
 
@@ -814,4 +633,4 @@ Expected: rows labeled with Claude's session titles; a dimmed `↳` line under w
 git status --short
 ```
 
-Expected: clean tree (everything committed in Tasks 1–4). If not, commit the remainder with an appropriate message.
+Expected: clean tree (everything committed in Tasks 1–3). If not, commit the remainder with an appropriate message.
