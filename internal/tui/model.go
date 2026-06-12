@@ -24,7 +24,7 @@ type Model struct {
 	groups    []Group
 	rows      []Row
 	cursor    int
-	selID     string
+	anchor    rowAnchor
 	collapsed map[string]bool
 
 	showPreview bool
@@ -39,6 +39,13 @@ type Model struct {
 	width     int
 	height    int
 	quitting  bool
+}
+
+// rowAnchor identifies the row the cursor is on so a refresh can restore it.
+type rowAnchor struct {
+	set  bool
+	kind RowKind
+	key  string // Group.Key for RowRepo, Session.ID for RowSession
 }
 
 // New builds a Model from a session source, repo resolver, and terminal backend.
@@ -186,9 +193,13 @@ func (m *Model) rebuildRows() {
 }
 
 func (m *Model) reanchor() {
-	if m.selID != "" {
+	if m.anchor.set {
 		for i, r := range m.rows {
-			if r.Kind == RowSession && r.Item.Session.ID == m.selID {
+			if r.Kind != m.anchor.kind {
+				continue
+			}
+			if (r.Kind == RowRepo && r.Group.Key == m.anchor.key) ||
+				(r.Kind == RowSession && r.Item.Session.ID == m.anchor.key) {
 				m.cursor = i
 				return
 			}
@@ -206,16 +217,24 @@ func (m *Model) clampCursor() {
 	}
 }
 
-func (m *Model) syncSel() {
-	if m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].Kind == RowSession {
-		m.selID = m.rows[m.cursor].Item.Session.ID
+// setAnchor records the row under the cursor so a later rebuild can restore it.
+func (m *Model) setAnchor() {
+	if m.cursor < 0 || m.cursor >= len(m.rows) {
+		m.anchor = rowAnchor{}
+		return
 	}
+	r := m.rows[m.cursor]
+	if r.Kind == RowRepo {
+		m.anchor = rowAnchor{set: true, kind: RowRepo, key: r.Group.Key}
+		return
+	}
+	m.anchor = rowAnchor{set: true, kind: RowSession, key: r.Item.Session.ID}
 }
 
 func (m *Model) moveCursor(d int) {
 	m.cursor += d
 	m.clampCursor()
-	m.syncSel()
+	m.setAnchor()
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -234,12 +253,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.previewIfOpen()
 	case "g":
 		m.cursor = 0
-		m.syncSel()
+		m.setAnchor()
 		return m, m.previewIfOpen()
 	case "G":
 		m.cursor = len(m.rows) - 1
 		m.clampCursor()
-		m.syncSel()
+		m.setAnchor()
 		return m, m.previewIfOpen()
 	case "l":
 		m.expand()
@@ -273,6 +292,7 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 	if r := m.rows[m.cursor]; r.Kind == RowRepo {
 		m.collapsed[r.Group.Key] = !m.collapsed[r.Group.Key]
 		m.rebuildRows()
+		m.setAnchor()
 		return m, nil
 	}
 	return m.focusSelected()
@@ -338,6 +358,7 @@ func (m *Model) expand() {
 	if r := m.rows[m.cursor]; r.Kind == RowRepo {
 		m.collapsed[r.Group.Key] = false
 		m.rebuildRows()
+		m.setAnchor()
 	}
 }
 
@@ -351,7 +372,6 @@ func (m *Model) collapse() {
 		key = r.Item.Repo.Root
 	}
 	m.collapsed[key] = true
-	m.selID = ""
 	m.rebuildRows()
 	for i, rr := range m.rows {
 		if rr.Kind == RowRepo && rr.Group.Key == key {
@@ -360,4 +380,5 @@ func (m *Model) collapse() {
 		}
 	}
 	m.clampCursor()
+	m.setAnchor()
 }
