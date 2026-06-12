@@ -166,20 +166,8 @@ func (m Model) renderBody(w int) (lines []string, cursorLine int) {
 func (m Model) renderTail(w int) []string {
 	var lines []string
 	if m.showPreview {
-		lines = append(lines, divider(w))
-		// Pane content renders only for a selected session: m.preview holds
-		// the previously selected session's pane, and on a repo row it would
-		// otherwise sit there, stale and unlabeled, indefinitely.
-		if sel := m.selectedItem(); sel != nil {
-			lines = append(lines, fmt.Sprintf("preview · %s (%s)", short(sel.Session.ID), sel.Repo.Name))
-			if m.preview != "" {
-				for _, ln := range strings.Split(m.preview, "\n") {
-					lines = append(lines, previewLine(ln, w))
-				}
-			}
-		} else {
-			lines = append(lines, "preview")
-		}
+		lines = append(lines, "")
+		lines = append(lines, m.renderPreviewBox(w)...)
 	}
 	if m.statusMsg != "" {
 		lines = append(lines, "", m.statusMsg)
@@ -192,11 +180,70 @@ func (m Model) renderTail(w int) []string {
 	return lines
 }
 
-// previewLine renders one captured pane line. Captured lines can carry
-// unterminated ANSI colors, so truncation must be ANSI-aware and each line
-// ends with a reset to keep its colors from tinting the rest of the UI.
+// Preview-box geometry. A content row is "│ <content> │" (boxFrameW cells of
+// frame); the top border embeds the label as "╭─ <label> ─…─╮"
+// (boxLabelAffixW cells around the label). previewReservedRows is everything
+// that must share the screen with the box's content rows: the three header
+// rows, the box's spacer + top + bottom borders, the blank + footer pair, and
+// one list row so the cursor stays visible.
+const (
+	boxFrameW           = 4
+	boxLabelAffixW      = 5
+	previewReservedRows = 9
+)
+
+// renderPreviewBox frames the captured pane in a rounded box: the capture
+// keeps its ANSI colors, and without a frame it reads like live terminal
+// output. Pane content renders only when the capture is for the selected
+// session — on a repo row, or right after the cursor moves, the previous
+// session's pane would otherwise sit under the wrong label until the next
+// capture lands.
+func (m Model) renderPreviewBox(w int) []string {
+	label := "preview"
+	var content []string
+	if sel := m.selectedItem(); sel != nil {
+		label = fmt.Sprintf("preview · %s (%s)", short(sel.Session.ID), sel.Repo.Name)
+		if m.preview != "" && m.previewSID == sel.Session.ID {
+			content = strings.Split(m.preview, "\n")
+		}
+	}
+	// The preview gives way before the list and footer do: on a short
+	// terminal keep only the newest rows, the tail of the pane.
+	if keep := m.height - previewReservedRows; m.height > 0 && len(content) > keep {
+		content = content[len(content)-max(keep, 0):]
+	}
+	lines := make([]string, 0, len(content)+2)
+	lines = append(lines, previewTop(label, w))
+	for _, ln := range content {
+		lines = append(lines, previewLine(ln, w))
+	}
+	return append(lines, previewBottom(w))
+}
+
+// previewTop renders the box's top border with the label embedded:
+// "╭─ preview · a1b2 (repo) ────╮". Border dim, label plain. The label is
+// clipped by cell width (not runes) so wide characters cannot push the
+// border past w.
+func previewTop(label string, w int) string {
+	label = ansi.Truncate(label, max(w-boxLabelAffixW-1, 1), "…")
+	fill := max(w-boxLabelAffixW-lipgloss.Width(label), 0)
+	return st.meta.Render("╭─ ") + label + st.meta.Render(" "+strings.Repeat("─", fill)+"╮")
+}
+
+func previewBottom(w int) string {
+	return st.meta.Render("╰" + strings.Repeat("─", max(w-2, 0)) + "╯")
+}
+
+// previewLine renders one captured pane line between the box borders.
+// Captured lines can carry unterminated ANSI colors, so truncation and
+// padding must be ANSI-aware, and the color is reset before the right
+// border to keep it from tinting the frame or the rest of the UI.
 func previewLine(ln string, w int) string {
-	return "  " + ansi.Truncate(ln, w-2, "…") + ansi.ResetStyle
+	inner := max(w-boxFrameW, 1)
+	ln = ansi.Truncate(ln, inner, "…")
+	pad := max(inner-lipgloss.Width(ln), 0)
+	return st.meta.Render("│") + " " + ln + ansi.ResetStyle +
+		strings.Repeat(" ", pad) + " " + st.meta.Render("│")
 }
 
 // clampToCursor trims lines to at most budget, sliding the window only as

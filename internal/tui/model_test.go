@@ -221,13 +221,118 @@ func TestPreviewSizeTracksHeight(t *testing.T) {
 
 func TestPreviewLineTruncatesAndResetsColor(t *testing.T) {
 	// A red line longer than the view, with no closing reset: it must be
-	// truncated to the view width and must not bleed color past its line.
+	// truncated to fit between the box borders, and its color must be reset
+	// before the right border so it cannot tint it.
 	line := previewLine("\x1b[31m"+strings.Repeat("x", 50), 30)
-	if w := lipgloss.Width(line); w > 30 {
-		t.Errorf("preview line width %d exceeds view width 30: %q", w, line)
+	if w := lipgloss.Width(line); w != 30 {
+		t.Errorf("preview line width = %d, want 30: %q", w, line)
 	}
-	if !strings.HasSuffix(line, ansi.ResetStyle) {
-		t.Errorf("preview line should end with a color reset: %q", line)
+	if !strings.HasPrefix(line, "│ ") || !strings.HasSuffix(line, "│") {
+		t.Errorf("preview line missing box borders: %q", line)
+	}
+	if !strings.Contains(line, ansi.ResetStyle+" │") {
+		t.Errorf("color should be reset before the right border: %q", line)
+	}
+	// A short line is padded so the right border stays aligned.
+	line = previewLine("hi", 30)
+	if w := lipgloss.Width(line); w != 30 {
+		t.Errorf("padded preview line width = %d, want 30: %q", w, line)
+	}
+}
+
+func TestPreviewPanelBoxed(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.width = 60
+	m.cursor = 1 // first session row (s1)
+	m.showPreview = true
+	next, _ := m.Update(previewMsg{sid: "s1", text: "pane line"})
+	m = next.(Model)
+
+	out := m.View()
+	if !strings.Contains(out, "╭─ preview · s1 (aaa) ") {
+		t.Errorf("missing top border with embedded label:\n%s", out)
+	}
+	if !strings.Contains(out, "\n\n╭") {
+		t.Errorf("missing blank line between list and preview box:\n%s", out)
+	}
+	if !strings.Contains(out, "│ pane line") {
+		t.Errorf("missing boxed content line:\n%s", out)
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(ln, "╭") || strings.HasPrefix(ln, "│") || strings.HasPrefix(ln, "╰") {
+			if w := lipgloss.Width(ln); w != 60 {
+				t.Errorf("box line width = %d, want 60: %q", w, ln)
+			}
+		}
+	}
+	var bottom string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(ln, "╰") {
+			bottom = ln
+		}
+	}
+	if !strings.HasSuffix(bottom, "╯") {
+		t.Errorf("missing or malformed bottom border %q:\n%s", bottom, out)
+	}
+
+	// On a repo row there is no selected session: the box stays, with a bare
+	// label and no stale content.
+	m.cursor = 0
+	out = m.View()
+	if !strings.Contains(out, "╭─ preview ─") {
+		t.Errorf("repo row should show bare preview box:\n%s", out)
+	}
+	if strings.Contains(out, "pane line") {
+		t.Errorf("stale pane content shown on repo row:\n%s", out)
+	}
+}
+
+func TestPreviewTopWideRunesStayInWidth(t *testing.T) {
+	// Rune count and cell width disagree for CJK names; the top border must
+	// be measured in cells or it overflows and the ╮ corner gets clipped.
+	top := previewTop("preview · abcd (日本語のリポジトリ名)", 30)
+	if w := lipgloss.Width(top); w != 30 {
+		t.Errorf("CJK label top border width = %d, want 30: %q", w, top)
+	}
+}
+
+func TestPreviewNotShownForOtherSession(t *testing.T) {
+	// A capture is tagged with the session it came from; after the cursor
+	// moves to another session the stale pane must not render under the new
+	// session's label while the fresh capture is in flight.
+	m := applyLoad(twoSessionModel())
+	m.width = 60
+	m.showPreview = true
+	m.cursor = 1 // session s1
+	next, _ := m.Update(previewMsg{sid: "s1", text: "s1 pane"})
+	m = next.(Model)
+	if out := m.View(); !strings.Contains(out, "s1 pane") {
+		t.Fatalf("own capture should render:\n%s", out)
+	}
+	m.cursor = 2 // session s2, capture still from s1
+	if out := m.View(); strings.Contains(out, "s1 pane") {
+		t.Errorf("s1 capture rendered under s2 label:\n%s", out)
+	}
+}
+
+func TestViewFitsShortTerminalWithPreview(t *testing.T) {
+	// At heights where the old divider+label chrome fit exactly, the boxed
+	// preview must still fit: the preview gives way before the footer does.
+	m := applyLoad(twoSessionModel())
+	m.width, m.height = 80, 16
+	m.showPreview = true
+	m.cursor = 1
+	next, _ := m.Update(previewMsg{sid: "s1",
+		text: strings.TrimRight(strings.Repeat("pane\n", 20), "\n")})
+	m = next.(Model)
+
+	out := strings.TrimSuffix(m.View(), "\n")
+	lines := strings.Split(out, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view is %d lines for a %d-row terminal:\n%s", len(lines), m.height, out)
+	}
+	if !strings.Contains(out, "q quit") {
+		t.Fatalf("footer clipped:\n%s", out)
 	}
 }
 
@@ -244,8 +349,10 @@ func TestViewFitsTerminalHeight(t *testing.T) {
 	m := applyLoad(New(src, repos, &fakeTerm{caps: terminal.CapPreview}))
 	m.width, m.height = 80, 24
 	m.showPreview = true
-	m.preview = strings.TrimRight(strings.Repeat("pane\n", m.previewSize()), "\n")
 	next, _ := m.Update(key("G")) // cursor on the last session
+	m = next.(Model)
+	next, _ = m.Update(previewMsg{sid: "s39",
+		text: strings.TrimRight(strings.Repeat("pane\n", m.previewSize()), "\n")})
 	m = next.(Model)
 
 	out := strings.TrimSuffix(m.View(), "\n")

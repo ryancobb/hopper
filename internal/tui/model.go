@@ -29,6 +29,7 @@ type Model struct {
 
 	showPreview bool
 	preview     string
+	previewSID  string // session the preview text was captured from
 
 	filtering bool
 	filter    string
@@ -71,6 +72,7 @@ type loadedMsg struct {
 }
 type focusMsg struct{ err error }
 type previewMsg struct {
+	sid  string // session the capture is for
 	text string
 	err  error
 }
@@ -109,19 +111,19 @@ func focusCmd(term terminal.Terminal, pid int) tea.Cmd {
 	}
 }
 
-func previewCmd(term terminal.Terminal, pid, lines int) tea.Cmd {
+func previewCmd(term terminal.Terminal, sid string, pid, lines int) tea.Cmd {
 	return func() tea.Msg {
 		if !term.Capabilities().Has(terminal.CapPreview) {
-			return previewMsg{err: terminal.ErrUnsupported}
+			return previewMsg{sid: sid, err: terminal.ErrUnsupported}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 		defer cancel()
 		h, ok := term.Locate(ctx, pid)
 		if !ok {
-			return previewMsg{err: terminal.ErrNotFound}
+			return previewMsg{sid: sid, err: terminal.ErrNotFound}
 		}
 		text, err := term.Preview(ctx, h, lines)
-		return previewMsg{text: text, err: err}
+		return previewMsg{sid: sid, text: text, err: err}
 	}
 }
 
@@ -143,7 +145,7 @@ func (m Model) previewIfOpen() tea.Cmd {
 	if r.Kind != RowSession {
 		return nil
 	}
-	return previewCmd(m.term, r.Item.Session.PID, m.previewSize())
+	return previewCmd(m.term, r.Item.Session.ID, r.Item.Session.PID, m.previewSize())
 }
 
 // Init kicks off the first load and the refresh tick.
@@ -182,6 +184,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.showPreview {
 			return m, nil // closed while the fetch was in flight
 		}
+		m.previewSID = msg.sid
 		if msg.err != nil {
 			m.preview = "(preview unavailable)"
 		} else {
@@ -336,7 +339,7 @@ func (m Model) togglePreview() (tea.Model, tea.Cmd) {
 	}
 	m.showPreview = !m.showPreview
 	if !m.showPreview {
-		m.preview = ""
+		m.preview, m.previewSID = "", ""
 		return m, nil
 	}
 	return m, m.previewIfOpen()
