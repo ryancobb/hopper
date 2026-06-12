@@ -3,6 +3,7 @@ package transcript
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -76,6 +77,7 @@ func (n *Namer) lookup(sessionID string) string {
 type entry struct {
 	Type    string `json:"type"`
 	IsMeta  bool   `json:"isMeta"`
+	AITitle string `json:"aiTitle"`
 	Message struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
@@ -127,4 +129,128 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(r[:max-1]) + "…"
+}
+
+// Info is the display data derived from a session's transcript.
+type Info struct {
+	Title       string // latest ai-title entry, "" if none yet
+	FirstPrompt string // first real user prompt, for fallback naming
+}
+
+const (
+	defaultTailBytes = 256 * 1024
+	nameMax          = 40
+)
+
+// Reader derives Infos from transcript JSONL files.
+type Reader struct {
+	projectsDir string
+	tailBytes   int64
+
+	glob func(pattern string) ([]string, error)
+	open func(path string) (io.ReadSeekCloser, error)
+	size func(path string) (int64, error)
+
+	mu sync.Mutex
+}
+
+// NewReader builds a Reader over ~/.claude/projects.
+func NewReader(projectsDir string) *Reader {
+	return &Reader{
+		projectsDir: projectsDir,
+		tailBytes:   defaultTailBytes,
+		glob:        filepath.Glob,
+		open:        func(p string) (io.ReadSeekCloser, error) { return os.Open(p) },
+		size: func(p string) (int64, error) {
+			fi, err := os.Stat(p)
+			if err != nil {
+				return 0, err
+			}
+			return fi.Size(), nil
+		},
+	}
+}
+
+// Info returns the session's display data.
+func (r *Reader) Info(sessionID string) Info {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	matches, err := r.glob(filepath.Join(r.projectsDir, "*", sessionID+".jsonl"))
+	if err != nil || len(matches) == 0 {
+		return Info{}
+	}
+	res, ok := r.scanFrom(matches[0], 0)
+	if !ok {
+		return Info{}
+	}
+	return Info{
+		Title:       truncate(res.title, nameMax),
+		FirstPrompt: truncate(res.firstPrompt, nameMax),
+	}
+}
+
+// result accumulates what one scan pass saw.
+type result struct {
+	title, firstPrompt string
+}
+
+// scanFrom parses transcript lines starting at offset; a partial first line at
+// a non-zero offset is discarded.
+func (r *Reader) scanFrom(path string, offset int64) (result, bool) {
+	f, err := r.open(path)
+	if err != nil {
+		return result{}, false
+	}
+	defer func() { _ = f.Close() }()
+
+	var res result
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return result{}, false
+		}
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return result{}, false
+		}
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			data = data[i+1:]
+		} else {
+			data = nil
+		}
+		for _, line := range bytes.Split(data, []byte{'\n'}) {
+			processLine(line, &res)
+		}
+		return res, true
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	for sc.Scan() {
+		processLine(sc.Bytes(), &res)
+	}
+	return res, true
+}
+
+// processLine folds one JSONL line into res: ai-titles last-win, the first
+// real user prompt sticks.
+func processLine(line []byte, res *result) {
+	var e entry
+	if err := json.Unmarshal(line, &e); err != nil {
+		return
+	}
+	switch e.Type {
+	case "ai-title":
+		if t := strings.TrimSpace(e.AITitle); t != "" {
+			res.title = t
+		}
+	case "user":
+		if res.firstPrompt != "" || e.IsMeta {
+			return
+		}
+		t := strings.TrimSpace(extractText(e.Message.Content))
+		if t == "" || strings.HasPrefix(t, "<") || strings.HasPrefix(t, "/") {
+			return
+		}
+		res.firstPrompt = t
+	}
 }
