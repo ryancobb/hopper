@@ -25,6 +25,33 @@ const (
 	sessionNameCol = statusCol - (6 + 2)
 )
 
+// Status-rail geometry. A session row is:
+//   gutter(2) indent(2) glyph(1) ' ' word(8) gap(2) name(flex) gap(2) age(4)
+// When the name would drop below minNameW, the word column is dropped:
+//   gutter(2) indent(2) glyph(1) gap(2) name(flex) gap(2) age(4)
+const (
+	gutterW       = 2
+	sessionIndent = 2 // session rows sit two cells deeper than repo headers
+	glyphW        = 1
+	statusWordW   = 8 // fits "working"/"blocked"; raw statuses truncate
+	ageW          = 4
+	colGap        = 2
+	minNameW      = 12
+)
+
+// sessionLayout computes session-row geometry at total width w: the flexible
+// name width, the column where the name starts, and whether the status word fits.
+func sessionLayout(w int) (nameW, nameStart int, showWord bool) {
+	nameStart = gutterW + sessionIndent + glyphW + 1 + statusWordW + colGap
+	nameW = w - nameStart - colGap - ageW
+	if nameW >= minNameW {
+		return nameW, nameStart, true
+	}
+	nameStart = gutterW + sessionIndent + glyphW + colGap
+	nameW = max(w-nameStart-colGap-ageW, 1)
+	return nameW, nameStart, false
+}
+
 // styles holds the structural lipgloss styles for the view. Status colors stay in
 // statusStyle so the status glyph/word and the repo badge share one mapping.
 type styles struct {
@@ -157,7 +184,7 @@ func (m Model) renderRow(i int, r Row, w int) string {
 	if r.Kind == RowRepo {
 		return m.renderRepoRow(r, selected)
 	}
-	return m.renderSessionRow(r, selected)
+	return m.renderSessionRow(r, selected, w)
 }
 
 func (m Model) renderHeader(w int) string {
@@ -191,20 +218,28 @@ func (m Model) renderRepoRow(r Row, selected bool) string {
 	return gutter(selected, r.Group.Kind) + fmt.Sprintf("%s %s %s  %s", caret, name, branchCol, badge)
 }
 
-func (m Model) renderSessionRow(r Row, selected bool) string {
+func (m Model) renderSessionRow(r Row, selected bool, w int) string {
 	it := r.Item
-	name := fmt.Sprintf("%-*s", sessionNameCol, truncate(it.Session.Name, sessionNameCol))
+	nameW, _, showWord := sessionLayout(w)
+	sty := statusStyle(it.Session.Kind)
+
+	var b strings.Builder
+	b.WriteString(gutter(selected, it.Session.Kind))
+	b.WriteString(strings.Repeat(" ", sessionIndent))
+	b.WriteString(sty.Render(icon(it.Session.Kind)))
+	if showWord {
+		b.WriteByte(' ')
+		b.WriteString(sty.Render(fmt.Sprintf("%-*s", statusWordW, truncate(statusText(it), statusWordW))))
+	}
+	b.WriteString(strings.Repeat(" ", colGap))
+	name := fmt.Sprintf("%-*s", nameW, truncate(it.Session.Name, nameW))
 	if selected {
 		name = st.bold.Render(name)
 	}
-	statusField := statusStyle(it.Session.Kind).Render(
-		fmt.Sprintf("%s %-8s", icon(it.Session.Kind), statusText(it)))
-	age := st.meta.Render(shortAge(time.Since(it.Session.UpdatedAt)))
-	reason := ""
-	if it.Session.Kind == status.Blocked && it.Session.WaitingFor != "" {
-		reason = st.meta.Render(" · " + it.Session.WaitingFor)
-	}
-	return gutter(selected, it.Session.Kind) + fmt.Sprintf("    %s  %s  %s%s", name, statusField, age, reason)
+	b.WriteString(name)
+	b.WriteString(strings.Repeat(" ", colGap))
+	b.WriteString(st.meta.Render(fmt.Sprintf("%*s", ageW, shortAge(time.Since(it.Session.UpdatedAt)))))
+	return b.String()
 }
 
 func statusStyle(k status.Kind) lipgloss.Style {

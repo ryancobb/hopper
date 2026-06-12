@@ -11,39 +11,63 @@ import (
 	"hopper/internal/status"
 )
 
-// statusColumn returns the display column of the status glyph in a rendered row.
-// Every rune before the glyph is width-1 (spaces, ASCII text, the caret), so the
-// rune count equals the column. The line must be plain (no ANSI).
-func statusColumn(line, glyph string) int {
-	i := strings.Index(line, glyph)
-	if i < 0 {
-		return -1
+func TestSessionLayout(t *testing.T) {
+	nameW, nameStart, showWord := sessionLayout(80)
+	if nameW != 58 || nameStart != 16 || !showWord {
+		t.Errorf("sessionLayout(80) = %d,%d,%v want 58,16,true", nameW, nameStart, showWord)
 	}
-	return utf8.RuneCountInString(line[:i])
+	// 32-22 = 10 < minNameW, so the status word drops out.
+	nameW, nameStart, showWord = sessionLayout(32)
+	if nameW != 19 || nameStart != 7 || showWord {
+		t.Errorf("sessionLayout(32) = %d,%d,%v want 19,7,false", nameW, nameStart, showWord)
+	}
 }
 
-func TestStatusColumnsAlign(t *testing.T) {
-	m := applyLoad(twoSessionModel()) // repo "aaa" aggregates to working (●)
-	var repoLine, sessLine string
-	for _, r := range m.rows {
-		switch {
-		case r.Kind == RowRepo:
-			repoLine = m.renderRepoRow(r, false)
-		case r.Kind == RowSession && r.Item.Session.Kind == status.Working:
-			sessLine = m.renderSessionRow(r, false)
+func TestSessionRowGeometry(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	var r Row
+	for _, rr := range m.rows {
+		if rr.Kind == RowSession && rr.Item.Session.Kind == status.Working {
+			r = rr
 		}
 	}
-	repoCol := statusColumn(repoLine, "●")
-	sessCol := statusColumn(sessLine, "●")
-	if repoCol < 0 || sessCol < 0 {
-		t.Fatalf("status glyph missing:\nrepo=%q\nsess=%q", repoLine, sessLine)
+	line := m.renderSessionRow(r, false, 60)
+	if got := utf8.RuneCountInString(line); got != 60 {
+		t.Fatalf("row width = %d, want 60: %q", got, line)
 	}
-	if repoCol != sessCol {
-		t.Errorf("status columns misaligned: repo=%d sess=%d\nrepo=%q\nsess=%q",
-			repoCol, sessCol, repoLine, sessLine)
+	runes := []rune(line)
+	if string(runes[4]) != "●" {
+		t.Errorf("glyph at col 4 = %q: %q", string(runes[4]), line)
 	}
-	if repoCol != statusCol {
-		t.Errorf("status column = %d, want statusCol=%d", repoCol, statusCol)
+	if got := string(runes[6:13]); got != "working" {
+		t.Errorf("status word = %q: %q", got, line)
+	}
+	if got := string(runes[16:21]); got != "first" {
+		t.Errorf("name at col 16 = %q: %q", got, line)
+	}
+	if !strings.HasSuffix(line, "0m") {
+		t.Errorf("age not right-aligned at edge: %q", line)
+	}
+}
+
+func TestSessionRowNarrowDropsStatusWord(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	var r Row
+	for _, rr := range m.rows {
+		if rr.Kind == RowSession && rr.Item.Session.Kind == status.Working {
+			r = rr
+		}
+	}
+	line := m.renderSessionRow(r, false, 32)
+	if strings.Contains(line, "working") {
+		t.Errorf("status word should be dropped at width 32: %q", line)
+	}
+	if got := utf8.RuneCountInString(line); got != 32 {
+		t.Errorf("row width = %d, want 32: %q", got, line)
+	}
+	runes := []rune(line)
+	if string(runes[4]) != "●" {
+		t.Errorf("glyph at col 4 = %q: %q", string(runes[4]), line)
 	}
 }
 
@@ -92,14 +116,14 @@ func TestSelectedRowBar(t *testing.T) {
 		}
 	}
 
-	sel := m.renderSessionRow(sessionRow, true)
+	sel := m.renderSessionRow(sessionRow, true, 60)
 	if !strings.Contains(sel, "▌") {
 		t.Errorf("selected row missing ▌ bar: %q", sel)
 	}
 	if !strings.ContainsRune(sel, '\x1b') {
 		t.Errorf("selected row should keep ANSI styling: %q", sel)
 	}
-	unsel := m.renderSessionRow(sessionRow, false)
+	unsel := m.renderSessionRow(sessionRow, false, 60)
 	if strings.Contains(unsel, "▌") {
 		t.Errorf("unselected row has ▌ bar: %q", unsel)
 	}
