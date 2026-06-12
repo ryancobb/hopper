@@ -15,16 +15,15 @@ type loader interface {
 	Load() ([]session.Session, error)
 }
 
-// reader derives display data from a session's transcript. Satisfied by
-// *transcript.Reader.
-type reader interface {
-	Info(sessionID string) transcript.Info
+// namer derives a display name for a session id. Satisfied by *transcript.Reader.
+type namer interface {
+	Name(sessionID string) string
 }
 
 // Source provides Claude Code sessions read from ~/.claude.
 type Source struct {
 	loader loader
-	reader reader
+	namer  namer
 }
 
 // New builds a Claude Code source over the given sessions and projects dirs
@@ -32,7 +31,7 @@ type Source struct {
 func New(sessionsDir, projectsDir string) *Source {
 	return &Source{
 		loader: session.NewLoader(sessionsDir, session.PIDAlive),
-		reader: transcript.NewReader(projectsDir),
+		namer:  transcript.NewReader(projectsDir),
 	}
 }
 
@@ -49,7 +48,7 @@ func (s *Source) Sessions(_ context.Context) ([]source.Session, error) {
 	for _, sess := range sessions {
 		out = append(out, source.Session{
 			ID:         sess.ID,
-			Name:       displayName(s.reader.Info(sess.ID), sess.ID),
+			Name:       displayName(s.namer.Name(sess.ID), sess.ID),
 			CWD:        sess.CWD,
 			PID:        sess.PID,
 			Kind:       kindOf(sess.Status),
@@ -61,19 +60,13 @@ func (s *Source) Sessions(_ context.Context) ([]source.Session, error) {
 	return out, nil
 }
 
-// displayName labels a session: Claude's latest session title, else the first
-// prompt, else a session-id prefix.
-func displayName(info transcript.Info, id string) string {
-	if info.Title != "" {
-		return info.Title
+// displayName guarantees a session label: the transcript-derived name when
+// present, else a session-id prefix.
+func displayName(name, id string) string {
+	if name != "" {
+		return name
 	}
-	if info.FirstPrompt != "" {
-		return info.FirstPrompt
-	}
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
+	return id[:min(8, len(id))]
 }
 
 // kindOf maps Claude Code's raw status vocabulary to a generic status kind.

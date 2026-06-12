@@ -7,7 +7,6 @@ import (
 
 	"hopper/internal/session"
 	"hopper/internal/status"
-	"hopper/internal/transcript"
 )
 
 type fakeLoader struct {
@@ -17,9 +16,9 @@ type fakeLoader struct {
 
 func (f fakeLoader) Load() ([]session.Session, error) { return f.sessions, f.err }
 
-type fakeReader struct{ infos map[string]transcript.Info }
+type fakeNamer struct{ names map[string]string }
 
-func (f fakeReader) Info(id string) transcript.Info { return f.infos[id] }
+func (f fakeNamer) Name(id string) string { return f.names[id] }
 
 func TestKindOf(t *testing.T) {
 	cases := map[string]status.Kind{
@@ -43,9 +42,7 @@ func TestSessionsMapsFields(t *testing.T) {
 			PID: 7, ID: "abc", CWD: "/x", Status: "waiting",
 			WaitingFor: "permission prompt", StatusUpdatedAt: now,
 		}}},
-		reader: fakeReader{infos: map[string]transcript.Info{
-			"abc": {Title: "do the thing"},
-		}},
+		namer: fakeNamer{names: map[string]string{"abc": "do the thing"}},
 	}
 	got, err := s.Sessions(context.Background())
 	if err != nil {
@@ -63,19 +60,14 @@ func TestSessionsMapsFields(t *testing.T) {
 }
 
 func TestDisplayName(t *testing.T) {
-	cases := []struct {
-		info transcript.Info
-		id   string
-		want string
-	}{
-		{transcript.Info{Title: "the title", FirstPrompt: "the prompt"}, "12345678-abc", "the title"},
-		{transcript.Info{FirstPrompt: "the prompt"}, "12345678-abc", "the prompt"},
-		{transcript.Info{}, "12345678-abc", "12345678"},
-		{transcript.Info{}, "short", "short"},
+	cases := []struct{ name, id, want string }{
+		{"the title", "12345678-abc", "the title"},
+		{"", "12345678-abc", "12345678"},
+		{"", "short", "short"},
 	}
 	for _, c := range cases {
-		if got := displayName(c.info, c.id); got != c.want {
-			t.Errorf("displayName(%+v, %q) = %q, want %q", c.info, c.id, got, c.want)
+		if got := displayName(c.name, c.id); got != c.want {
+			t.Errorf("displayName(%q, %q) = %q, want %q", c.name, c.id, got, c.want)
 		}
 	}
 }
