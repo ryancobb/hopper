@@ -67,8 +67,23 @@ func TestKittyPreviewTail(t *testing.T) {
 		t.Fatalf("preview tail: %q", out)
 	}
 	got := strings.Join(calls[0], " ")
-	if got != "get-text --match id:4 --extent screen --ansi" {
+	if got != "get-text --match id:4 --extent screen --ansi --add-wrap-markers" {
 		t.Fatalf("preview args: %q", got)
+	}
+}
+
+func TestKittyPreviewSplitsWrapMarkers(t *testing.T) {
+	// Soft-wrapped screen rows come back as one logical line unless wrap
+	// markers are requested; markers are carriage returns. Each screen row
+	// must become its own preview line so widths match the captured window.
+	text := "wrapped-a\rwrapped-b\nplain\n"
+	k := fakeKitty(text, nil)
+	out, err := k.Preview(context.Background(), 4, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "wrapped-a\nwrapped-b\nplain" {
+		t.Fatalf("wrap markers not split into rows: %q", out)
 	}
 }
 

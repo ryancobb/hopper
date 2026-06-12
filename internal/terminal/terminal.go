@@ -28,8 +28,12 @@ type Terminal interface {
 	Locate(ctx context.Context, pid int) (Handle, bool)
 	Focus(ctx context.Context, h Handle) error
 	// Preview returns the last `lines` non-empty rows of the pane's screen.
-	// The text is raw terminal output and may carry ANSI styling, including
-	// colors left open across lines; callers must not assume plain text.
+	// Each newline-separated line must be exactly one rendered screen row,
+	// no wider than the source pane: soft-wrapped output must be split into
+	// its rows, not rejoined into logical lines (the TUI's box layout relies
+	// on this). The text is raw terminal output and may carry ANSI styling,
+	// including colors left open across rows; callers must not assume plain
+	// text.
 	Preview(ctx context.Context, h Handle, lines int) (string, error)
 }
 

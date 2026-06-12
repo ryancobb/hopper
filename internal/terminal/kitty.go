@@ -79,16 +79,21 @@ func (k *Kitty) Preview(ctx context.Context, h Handle, lines int) (string, error
 	if !ok {
 		return "", ErrBadHandle
 	}
-	out, err := k.run(ctx, "get-text", "--match", fmt.Sprintf("id:%d", id), "--extent", "screen", "--ansi")
+	out, err := k.run(ctx, "get-text", "--match", fmt.Sprintf("id:%d", id), "--extent", "screen", "--ansi", "--add-wrap-markers")
 	if err != nil {
 		return "", err
 	}
 	return lastNonEmptyLines(string(out), lines), nil
 }
 
+// lastNonEmptyLines keeps the last n visually non-empty screen rows. Without
+// wrap markers kitty rejoins soft-wrapped rows into one logical line, which
+// can be wider than the captured window; the markers are carriage returns,
+// so \n and \r both delimit rows. FieldsFunc drops the empty segments a \r\n
+// pair would produce, matching the blank-row filter below.
 func lastNonEmptyLines(s string, n int) string {
 	var kept []string
-	for _, ln := range strings.Split(s, "\n") {
+	for _, ln := range strings.FieldsFunc(s, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		if strings.TrimSpace(ansi.Strip(ln)) != "" {
 			kept = append(kept, ln)
 		}
