@@ -60,6 +60,7 @@ func (c displayClass) label() string {
 	}
 }
 
+// icon is the single-cell status glyph; both idle classes share ○.
 func (c displayClass) icon() string {
 	switch c {
 	case classBlocked:
@@ -73,6 +74,7 @@ func (c displayClass) icon() string {
 	}
 }
 
+// style is the class's foreground color style.
 func (c displayClass) style() lipgloss.Style {
 	switch c {
 	case classBlocked:
