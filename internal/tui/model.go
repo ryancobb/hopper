@@ -3,10 +3,10 @@ package tui
 import (
 	"time"
 
-	"cctop/internal/repo"
-	"cctop/internal/session"
-	"cctop/internal/terminal"
 	tea "github.com/charmbracelet/bubbletea"
+	"hopper/internal/repo"
+	"hopper/internal/session"
+	"hopper/internal/terminal"
 )
 
 // Loader, RepoResolver, Namer are the model's dependencies (interfaces for testing).

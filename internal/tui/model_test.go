@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"cctop/internal/repo"
-	"cctop/internal/session"
-	"cctop/internal/terminal"
 	tea "github.com/charmbracelet/bubbletea"
+	"hopper/internal/repo"
+	"hopper/internal/session"
+	"hopper/internal/terminal"
 )
 
 type fakeLoader struct {

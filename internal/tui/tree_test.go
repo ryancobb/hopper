@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"cctop/internal/repo"
-	"cctop/internal/session"
+	"hopper/internal/repo"
+	"hopper/internal/session"
 )
 
 func item(id, root, name, branch, status string, ago time.Duration) Item {

@@ -1,4 +1,4 @@
-module cctop
+module hopper
 
 go 1.24.0
 

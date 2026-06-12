@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	"cctop/internal/repo"
-	"cctop/internal/session"
+	"hopper/internal/repo"
+	"hopper/internal/session"
 )
 
 // Item is a session enriched for display.

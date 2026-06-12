@@ -1,4 +1,4 @@
-// Command cctop is a TUI showing live Claude Code sessions grouped by git repo.
+// Command hopper is a TUI showing live Claude Code sessions grouped by git repo.
 package main
 
 import (
@@ -7,12 +7,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"cctop/internal/repo"
-	"cctop/internal/session"
-	"cctop/internal/terminal"
-	"cctop/internal/transcript"
-	"cctop/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
+	"hopper/internal/repo"
+	"hopper/internal/session"
+	"hopper/internal/terminal"
+	"hopper/internal/transcript"
+	"hopper/internal/tui"
 )
 
 func main() {
