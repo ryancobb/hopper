@@ -138,6 +138,10 @@ func (m Model) View() string {
 			}
 			b.WriteString(m.renderRow(i, r, w))
 			b.WriteByte('\n')
+			if r.Kind == RowSession && r.Item.Session.Kind == status.Blocked && r.Item.Session.WaitingFor != "" {
+				b.WriteString(m.renderReasonRow(r.Item, w))
+				b.WriteByte('\n')
+			}
 		}
 	}
 
@@ -243,6 +247,14 @@ func (m Model) renderSessionRow(r Row, selected bool, w int) string {
 	b.WriteString(strings.Repeat(" ", colGap))
 	b.WriteString(st.meta.Render(fmt.Sprintf("%*s", ageW, shortAge(time.Since(it.Session.UpdatedAt)))))
 	return b.String()
+}
+
+// renderReasonRow is the dimmed continuation line carrying a blocked session's
+// reason, indented to the name column. It is display-only: it is not a Row, so
+// the cursor never lands on it.
+func (m Model) renderReasonRow(it *Item, w int) string {
+	_, nameStart, _ := sessionLayout(w)
+	return strings.Repeat(" ", nameStart) + st.meta.Render(truncate("↳ "+it.Session.WaitingFor, w-nameStart))
 }
 
 func statusStyle(k status.Kind) lipgloss.Style {

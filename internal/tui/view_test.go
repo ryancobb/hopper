@@ -3,10 +3,12 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+	"hopper/internal/repo"
 	"hopper/internal/source"
 	"hopper/internal/status"
 )
@@ -126,5 +128,24 @@ func TestSelectedRowBar(t *testing.T) {
 	unsel := m.renderSessionRow(sessionRow, false, 60)
 	if strings.Contains(unsel, "▌") {
 		t.Errorf("unselected row has ▌ bar: %q", unsel)
+	}
+}
+
+func TestBlockedReasonContinuationLine(t *testing.T) {
+	now := time.Now()
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "s1", PID: 1, CWD: "/a", Name: "stuck", Kind: status.Blocked, WaitingFor: "permission: rm", UpdatedAt: now},
+		{ID: "s2", PID: 2, CWD: "/a", Name: "fine", Kind: status.Working, UpdatedAt: now},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa", Branch: "main"}}}
+	m := applyLoad(New(src, repos, &fakeTerm{}))
+	m.width = 60
+
+	out := m.View()
+	if !strings.Contains(out, "↳ permission: rm") {
+		t.Errorf("missing reason continuation line:\n%s", out)
+	}
+	if got := strings.Count(out, "↳"); got != 1 {
+		t.Errorf("continuation lines = %d, want 1 (only the blocked session):\n%s", got, out)
 	}
 }
