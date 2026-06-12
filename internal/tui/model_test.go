@@ -2,11 +2,15 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"hopper/internal/repo"
 	"hopper/internal/source"
 	"hopper/internal/status"
@@ -193,6 +197,77 @@ func TestFilterBackspace(t *testing.T) {
 	// back to "sec" → matches "second" → repo + 1 session
 	if m.filter != "sec" || len(m.rows) != 2 {
 		t.Fatalf("after backspace filter=%q rows=%d", m.filter, len(m.rows))
+	}
+}
+
+func TestPreviewSizeTracksHeight(t *testing.T) {
+	m := twoSessionModel()
+	if got := m.previewSize(); got != previewDefaultLines {
+		t.Fatalf("unknown height: previewSize=%d want %d", got, previewDefaultLines)
+	}
+	m.height = 60
+	if got := m.previewSize(); got != 20 { // a third of the screen
+		t.Fatalf("height 60: previewSize=%d want 20", got)
+	}
+	m.height = 12
+	if got := m.previewSize(); got != previewMinLines {
+		t.Fatalf("height 12: previewSize=%d want %d", got, previewMinLines)
+	}
+	m.height = 200
+	if got := m.previewSize(); got != previewMaxLines {
+		t.Fatalf("height 200: previewSize=%d want %d", got, previewMaxLines)
+	}
+}
+
+func TestPreviewLineTruncatesAndResetsColor(t *testing.T) {
+	// A red line longer than the view, with no closing reset: it must be
+	// truncated to the view width and must not bleed color past its line.
+	line := previewLine("\x1b[31m"+strings.Repeat("x", 50), 30)
+	if w := lipgloss.Width(line); w > 30 {
+		t.Errorf("preview line width %d exceeds view width 30: %q", w, line)
+	}
+	if !strings.HasSuffix(line, ansi.ResetStyle) {
+		t.Errorf("preview line should end with a color reset: %q", line)
+	}
+}
+
+func TestViewFitsTerminalHeight(t *testing.T) {
+	// Enough sessions that the list alone overflows a 24-row terminal.
+	now := time.Now()
+	sessions := make([]source.Session, 40)
+	for i := range sessions {
+		sessions[i] = source.Session{ID: fmt.Sprintf("s%d", i), PID: i + 1,
+			CWD: "/a", Name: fmt.Sprintf("session-%d", i), Kind: status.Working, UpdatedAt: now}
+	}
+	src := fakeSource{label: "Claude Code", sessions: sessions}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa"}}}
+	m := applyLoad(New(src, repos, &fakeTerm{caps: terminal.CapPreview}))
+	m.width, m.height = 80, 24
+	m.showPreview = true
+	m.preview = strings.TrimRight(strings.Repeat("pane\n", m.previewSize()), "\n")
+	next, _ := m.Update(key("G")) // cursor on the last session
+	m = next.(Model)
+
+	out := strings.TrimSuffix(m.View(), "\n")
+	lines := strings.Split(out, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view is %d lines for a %d-row terminal", len(lines), m.height)
+	}
+	if !strings.Contains(out, "session-39") {
+		t.Fatal("selected row was clipped out of the view")
+	}
+	if !strings.Contains(out, "pane") || !strings.Contains(out, "q quit") {
+		t.Fatal("preview or footer was clipped out of the view")
+	}
+}
+
+func TestSplitRowsResolvesEmbeddedNewlines(t *testing.T) {
+	lines, cursor := splitRows([]string{"a", "b\nc", "d"}, 2)
+	if want := []string{"a", "b", "c", "d"}; !slices.Equal(lines, want) {
+		t.Fatalf("splitRows lines = %q, want %q", lines, want)
+	}
+	if cursor != 3 { // element "d" now starts at row 3
+		t.Fatalf("splitRows cursor = %d, want 3", cursor)
 	}
 }
 

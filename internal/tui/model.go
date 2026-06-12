@@ -58,7 +58,10 @@ const (
 	refreshInterval = time.Second
 	loadTimeout     = 3 * time.Second
 	actionTimeout   = 2 * time.Second
-	previewLines    = 6
+
+	previewMinLines     = 8
+	previewMaxLines     = 24
+	previewDefaultLines = 12
 )
 
 type tickMsg time.Time
@@ -122,6 +125,16 @@ func previewCmd(term terminal.Terminal, pid, lines int) tea.Cmd {
 	}
 }
 
+// previewSize is the number of pane lines to capture: roughly a third of the
+// terminal, clamped so the session list keeps most of the screen. A keypress
+// can race the first WindowSizeMsg, so an unknown height gets a sane default.
+func (m Model) previewSize() int {
+	if m.height <= 0 {
+		return previewDefaultLines
+	}
+	return min(max(m.height/3, previewMinLines), previewMaxLines)
+}
+
 func (m Model) previewIfOpen() tea.Cmd {
 	if !m.showPreview || m.cursor < 0 || m.cursor >= len(m.rows) {
 		return nil
@@ -130,7 +143,7 @@ func (m Model) previewIfOpen() tea.Cmd {
 	if r.Kind != RowSession {
 		return nil
 	}
-	return previewCmd(m.term, r.Item.Session.PID, previewLines)
+	return previewCmd(m.term, r.Item.Session.PID, m.previewSize())
 }
 
 // Init kicks off the first load and the refresh tick.
@@ -166,6 +179,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case previewMsg:
+		if !m.showPreview {
+			return m, nil // closed while the fetch was in flight
+		}
 		if msg.err != nil {
 			m.preview = "(preview unavailable)"
 		} else {

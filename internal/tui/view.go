@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"hopper/internal/status"
 )
 
@@ -91,62 +93,122 @@ func truncate(s string, max int) string {
 	return string(r[:max-1]) + "…"
 }
 
-// View renders the model.
+// View renders the model: a fixed top (header), a fixed tail (preview,
+// status, footer), and the session list between them. In altscreen mode
+// anything past the terminal height is silently clipped, so the list is the
+// one region that gives way: it is clamped to the remaining height, scrolled
+// to keep the cursor row visible.
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
 	w := m.contentWidth()
-	var b strings.Builder
 
-	b.WriteString(m.renderHeader(w))
-	b.WriteByte('\n')
-	b.WriteString(st.meta.Render(strings.Repeat("─", w)))
-	b.WriteString("\n\n")
+	top := []string{m.renderHeader(w), divider(w), ""}
+	body, cursorLine := splitRows(m.renderBody(w))
+	tail, _ := splitRows(m.renderTail(w), 0)
 
+	if m.height > 0 {
+		body = clampToCursor(body, m.height-len(top)-len(tail), cursorLine)
+	}
+
+	return strings.Join(slices.Concat(top, body, tail), "\n") + "\n"
+}
+
+// splitRows resolves embedded newlines so each element is exactly one
+// terminal row — the height budget above counts one row per element, and
+// error strings, blocked reasons, and pasted filter text can all carry
+// newlines. The cursor element index is remapped to its first row. Width
+// needs no such guard: bubbletea truncates overwide lines instead of
+// letting them wrap.
+func splitRows(lines []string, cursor int) ([]string, int) {
+	out := make([]string, 0, len(lines))
+	row := 0
+	for i, ln := range lines {
+		if i == cursor {
+			row = len(out)
+		}
+		out = append(out, strings.Split(ln, "\n")...)
+	}
+	return out, row
+}
+
+func divider(w int) string {
+	return st.meta.Render(strings.Repeat("─", w))
+}
+
+// renderBody renders the session list and reports which line carries the
+// cursor, so View can keep it visible when the list is clamped.
+func (m Model) renderBody(w int) (lines []string, cursorLine int) {
 	switch {
 	case m.loadErr != nil:
-		fmt.Fprintf(&b, "error: %v\n", m.loadErr)
+		return []string{fmt.Sprintf("error: %v", m.loadErr)}, 0
 	case len(m.rows) == 0:
-		b.WriteString(st.meta.Render("no live sessions") + "\n")
-	default:
-		for i, r := range m.rows {
-			if r.Kind == RowRepo && i > 0 {
-				b.WriteByte('\n') // blank line between repo groups
-			}
-			b.WriteString(m.renderRow(i, r, w))
-			b.WriteByte('\n')
-			if r.Kind == RowSession && r.Item.Session.Kind == status.Blocked && r.Item.Session.WaitingFor != "" {
-				b.WriteString(m.renderReasonRow(r.Item, w))
-				b.WriteByte('\n')
-			}
+		return []string{st.meta.Render("no live sessions")}, 0
+	}
+	for i, r := range m.rows {
+		if r.Kind == RowRepo && i > 0 {
+			lines = append(lines, "") // blank line between repo groups
+		}
+		if i == m.cursor {
+			cursorLine = len(lines)
+		}
+		lines = append(lines, m.renderRow(i, r, w))
+		if r.Kind == RowSession && r.Item.Session.Kind == status.Blocked && r.Item.Session.WaitingFor != "" {
+			lines = append(lines, m.renderReasonRow(r.Item, w))
 		}
 	}
+	return lines, cursorLine
+}
 
+// renderTail renders everything below the session list: the preview panel,
+// the status message, and the filter prompt or footer.
+func (m Model) renderTail(w int) []string {
+	var lines []string
 	if m.showPreview {
-		b.WriteString(st.meta.Render(strings.Repeat("─", w)) + "\n")
-		sel := m.selectedItem()
-		if sel != nil {
-			fmt.Fprintf(&b, "preview · %s (%s)\n", short(sel.Session.ID), sel.Repo.Name)
-		} else {
-			b.WriteString("preview\n")
-		}
-		if m.preview != "" {
-			for _, ln := range strings.Split(m.preview, "\n") {
-				b.WriteString("  " + ln + "\n")
+		lines = append(lines, divider(w))
+		// Pane content renders only for a selected session: m.preview holds
+		// the previously selected session's pane, and on a repo row it would
+		// otherwise sit there, stale and unlabeled, indefinitely.
+		if sel := m.selectedItem(); sel != nil {
+			lines = append(lines, fmt.Sprintf("preview · %s (%s)", short(sel.Session.ID), sel.Repo.Name))
+			if m.preview != "" {
+				for _, ln := range strings.Split(m.preview, "\n") {
+					lines = append(lines, previewLine(ln, w))
+				}
 			}
+		} else {
+			lines = append(lines, "preview")
 		}
 	}
-
 	if m.statusMsg != "" {
-		b.WriteString("\n" + m.statusMsg + "\n")
+		lines = append(lines, "", m.statusMsg)
 	}
 	if m.filtering {
-		b.WriteString("\n/" + m.filter + "\n")
+		lines = append(lines, "", "/"+m.filter)
 	} else {
-		b.WriteString("\n" + st.footer.Render(footer) + "\n")
+		lines = append(lines, "", st.footer.Render(footer))
 	}
-	return b.String()
+	return lines
+}
+
+// previewLine renders one captured pane line. Captured lines can carry
+// unterminated ANSI colors, so truncation must be ANSI-aware and each line
+// ends with a reset to keep its colors from tinting the rest of the UI.
+func previewLine(ln string, w int) string {
+	return "  " + ansi.Truncate(ln, w-2, "…") + ansi.ResetStyle
+}
+
+// clampToCursor trims lines to at most budget, sliding the window only as
+// far as needed to keep the cursor line in view. It is total: any budget or
+// cursor, including out-of-range ones, yields a valid window.
+func clampToCursor(lines []string, budget, cursor int) []string {
+	budget = max(budget, 1)
+	if len(lines) <= budget {
+		return lines
+	}
+	off := min(max(0, cursor-budget+1), len(lines)-budget)
+	return lines[off : off+budget]
 }
 
 func (m Model) countSessions() int {
