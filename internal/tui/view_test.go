@@ -172,6 +172,9 @@ func TestSelectedRowBar(t *testing.T) {
 	if !strings.Contains(selRepo, "▌") {
 		t.Errorf("selected repo row missing ▌ bar: %q", selRepo)
 	}
+	if got := lipgloss.Width(selRepo); got != 60 {
+		t.Errorf("selected repo row width = %d, want 60: %q", got, selRepo)
+	}
 }
 
 func TestBlockedReasonContinuationLine(t *testing.T) {
