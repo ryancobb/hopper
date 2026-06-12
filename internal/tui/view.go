@@ -26,9 +26,12 @@ const (
 )
 
 // Status-rail geometry. A session row is:
-//   gutter(2) indent(2) glyph(1) ' ' word(8) gap(2) name(flex) gap(2) age(4)
+//
+//	gutter(2) indent(2) glyph(1) ' ' word(8) gap(2) name(flex) gap(2) age(4)
+//
 // When the name would drop below minNameW, the word column is dropped:
-//   gutter(2) indent(2) glyph(1) gap(2) name(flex) gap(2) age(4)
+//
+//	gutter(2) indent(2) glyph(1) gap(2) name(flex) gap(2) age(4)
 const (
 	gutterW       = 2
 	sessionIndent = 2 // session rows sit two cells deeper than repo headers
