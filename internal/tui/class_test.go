@@ -30,9 +30,6 @@ func TestClassify(t *testing.T) {
 }
 
 func TestClassRecentIdleAppearance(t *testing.T) {
-	if got := classRecentIdle.label(); got != "recent" {
-		t.Errorf("label = %q, want %q", got, "recent")
-	}
 	if got := classRecentIdle.icon(); got != "○" {
 		t.Errorf("icon = %q, want %q", got, "○")
 	}

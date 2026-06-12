@@ -14,14 +14,16 @@ import (
 )
 
 func TestSessionLayout(t *testing.T) {
-	nameW, nameStart, showWord := sessionLayout(80)
-	if nameW != 58 || nameStart != 16 || !showWord {
-		t.Errorf("sessionLayout(80) = %d,%d,%v want 58,16,true", nameW, nameStart, showWord)
+	// Icon-only with a 1-cell gutter: the name starts at column 4 (gutter 1 +
+	// indent 1 + glyph 1 + gap 1) and flexes to fill the row minus the gap and
+	// age columns.
+	nameW, nameStart := sessionLayout(80)
+	if nameW != 71 || nameStart != 4 {
+		t.Errorf("sessionLayout(80) = %d,%d want 71,4", nameW, nameStart)
 	}
-	// 32-22 = 10 < minNameW, so the status word drops out.
-	nameW, nameStart, showWord = sessionLayout(32)
-	if nameW != 19 || nameStart != 7 || showWord {
-		t.Errorf("sessionLayout(32) = %d,%d,%v want 19,7,false", nameW, nameStart, showWord)
+	nameW, nameStart = sessionLayout(32)
+	if nameW != 23 || nameStart != 4 {
+		t.Errorf("sessionLayout(32) = %d,%d want 23,4", nameW, nameStart)
 	}
 }
 
@@ -38,21 +40,23 @@ func TestSessionRowGeometry(t *testing.T) {
 		t.Fatalf("row width = %d, want 60: %q", got, line)
 	}
 	runes := []rune(line)
-	if string(runes[4]) != "●" {
-		t.Errorf("glyph at col 4 = %q: %q", string(runes[4]), line)
+	// The working row's glyph is the animated spinner (frame 0 by default).
+	if string(runes[2]) != spinnerFrames[0] {
+		t.Errorf("glyph at col 2 = %q, want spinner frame 0: %q", string(runes[2]), line)
 	}
-	if got := string(runes[6:13]); got != "working" {
-		t.Errorf("status word = %q: %q", got, line)
+	// Icon-only with a 1-cell gutter: no status word; the name starts at column 4.
+	if got := string(runes[4:9]); got != "first" {
+		t.Errorf("name at col 4 = %q: %q", got, line)
 	}
-	if got := string(runes[16:21]); got != "first" {
-		t.Errorf("name at col 16 = %q: %q", got, line)
+	if strings.Contains(line, "working") {
+		t.Errorf("status word should not appear: %q", line)
 	}
 	if !strings.HasSuffix(line, "0m") {
 		t.Errorf("age not right-aligned at edge: %q", line)
 	}
 }
 
-func TestSessionRowNarrowDropsStatusWord(t *testing.T) {
+func TestSessionRowOmitsStatusWord(t *testing.T) {
 	m := applyLoad(twoSessionModel())
 	var r Row
 	for _, rr := range m.rows {
@@ -62,14 +66,14 @@ func TestSessionRowNarrowDropsStatusWord(t *testing.T) {
 	}
 	line := m.renderSessionRow(r, false, 32)
 	if strings.Contains(line, "working") {
-		t.Errorf("status word should be dropped at width 32: %q", line)
+		t.Errorf("status word should never appear: %q", line)
 	}
 	if got := utf8.RuneCountInString(line); got != 32 {
 		t.Errorf("row width = %d, want 32: %q", got, line)
 	}
 	runes := []rune(line)
-	if string(runes[4]) != "●" {
-		t.Errorf("glyph at col 4 = %q: %q", string(runes[4]), line)
+	if string(runes[2]) != spinnerFrames[0] {
+		t.Errorf("glyph at col 2 = %q, want spinner frame 0: %q", string(runes[2]), line)
 	}
 }
 
@@ -92,7 +96,7 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestRepoRowBreakdownRightAligned(t *testing.T) {
+func TestRepoRowNoBreakdown(t *testing.T) {
 	m := applyLoad(twoSessionModel())
 	var r Row
 	for _, rr := range m.rows {
@@ -101,17 +105,14 @@ func TestRepoRowBreakdownRightAligned(t *testing.T) {
 		}
 	}
 	line := m.renderRepoRow(r, false, 60)
-	if got := lipgloss.Width(line); got != 60 {
-		t.Errorf("repo row width = %d, want 60: %q", got, line)
-	}
-	if !strings.HasSuffix(line, "● 1 working · ○ 1 recent") {
-		t.Errorf("breakdown not right-aligned, worst-first: %q", line)
-	}
 	if !strings.Contains(line, "▾ aaa") {
 		t.Errorf("missing caret+name: %q", line)
 	}
-	if strings.Contains(line, "main") {
-		t.Errorf("branch should be removed: %q", line)
+	// The status breakdown and branch are both gone from the repo row.
+	for _, gone := range []string{"working", "recent", "·", "main"} {
+		if strings.Contains(line, gone) {
+			t.Errorf("repo row should not contain %q: %q", gone, line)
+		}
 	}
 }
 
@@ -174,9 +175,6 @@ func TestSelectedRowBar(t *testing.T) {
 	if !strings.Contains(selRepo, "▌") {
 		t.Errorf("selected repo row missing ▌ bar: %q", selRepo)
 	}
-	if got := lipgloss.Width(selRepo); got != 60 {
-		t.Errorf("selected repo row width = %d, want 60: %q", got, selRepo)
-	}
 }
 
 func TestRecentIdleRowStyling(t *testing.T) {
@@ -216,9 +214,248 @@ func TestRecentIdleRowStyling(t *testing.T) {
 	if strings.Contains(staleLine, classRecentIdle.style().Render("○")) {
 		t.Errorf("stale idle row styled as recent: %q", staleLine)
 	}
-	// The status word still reads "idle" on both rows; only color differs.
-	if !strings.Contains(freshLine, "idle") || !strings.Contains(staleLine, "idle") {
-		t.Errorf("status word should stay \"idle\":\n%q\n%q", freshLine, staleLine)
+	// Icon-only: both rows share the ○ glyph and carry no status word; only the
+	// glyph color distinguishes recent from stale.
+	if strings.Contains(freshLine, "idle") || strings.Contains(staleLine, "idle") {
+		t.Errorf("status word should not appear:\n%q\n%q", freshLine, staleLine)
+	}
+}
+
+func TestWorkingRowAnimates(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	var work, idle Row
+	for _, r := range m.rows {
+		if r.Kind != RowSession {
+			continue
+		}
+		if r.Item.Session.Kind == status.Working {
+			work = r
+		} else {
+			idle = r
+		}
+	}
+
+	m.spinnerFrame = 0
+	if line := m.renderSessionRow(work, false, 60); !strings.Contains(line, spinnerFrames[0]) {
+		t.Errorf("working row missing spinner frame 0: %q", line)
+	}
+	m.spinnerFrame = 3
+	if line := m.renderSessionRow(work, false, 60); !strings.Contains(line, spinnerFrames[3]) {
+		t.Errorf("working row missing spinner frame 3: %q", line)
+	}
+	// The frame index wraps around the slice.
+	m.spinnerFrame = len(spinnerFrames) + 1
+	if line := m.renderSessionRow(work, false, 60); !strings.Contains(line, spinnerFrames[1]) {
+		t.Errorf("spinner frame should wrap: %q", line)
+	}
+	// Non-working rows keep their static glyph and never spin.
+	if line := m.renderSessionRow(idle, false, 60); strings.Contains(line, spinnerFrames[0]) {
+		t.Errorf("idle row should not animate: %q", line)
+	}
+}
+
+func TestSidebarWidth(t *testing.T) {
+	cases := []struct{ w, want int }{
+		{40, 24}, {60, 24}, {90, 30}, {120, 40}, {200, 40},
+	}
+	for _, c := range cases {
+		if got := sidebarWidth(c.w); got != c.want {
+			t.Errorf("sidebarWidth(%d) = %d, want %d", c.w, got, c.want)
+		}
+	}
+}
+
+func TestUseSplit(t *testing.T) {
+	m := Model{showPreview: true}
+	if !m.useSplit(splitMinWidth) {
+		t.Errorf("useSplit(%d) = false, want true at the threshold", splitMinWidth)
+	}
+	if m.useSplit(splitMinWidth - 1) {
+		t.Error("useSplit below threshold = true, want false")
+	}
+	m.showPreview = false
+	if m.useSplit(200) {
+		t.Error("useSplit with preview off = true, want false")
+	}
+}
+
+func TestPreviewPaneFillsHeight(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1 // session s1
+	m.showPreview = true
+	next, _ := m.Update(previewMsg{sid: "s1", text: "line one\nline two"})
+	m = next.(Model)
+
+	// 5 content rows requested: 2 real lines, 3 padded; plus top+bottom borders.
+	lines := m.renderPreviewPane(40, 5)
+	if len(lines) != 7 {
+		t.Fatalf("pane height = %d, want 7 (5 content + 2 borders)", len(lines))
+	}
+	if !strings.HasPrefix(lines[0], "╭─ preview · s1 (aaa)") {
+		t.Errorf("top border/label wrong: %q", lines[0])
+	}
+	if !strings.HasSuffix(lines[len(lines)-1], "╯") {
+		t.Errorf("bottom border wrong: %q", lines[len(lines)-1])
+	}
+	for _, ln := range lines {
+		if w := lipgloss.Width(ln); w != 40 {
+			t.Errorf("pane line width = %d, want 40: %q", w, ln)
+		}
+	}
+	if !strings.Contains(lines[1], "line one") || !strings.Contains(lines[2], "line two") {
+		t.Errorf("content lines missing:\n%q\n%q", lines[1], lines[2])
+	}
+}
+
+func TestPreviewReflowsLongLine(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1 // session s1
+	m.showPreview = true
+	// One logical line wider than the pane's inner width (40 - boxFrameW = 36).
+	long := strings.Repeat("x", 60)
+	next, _ := m.Update(previewMsg{sid: "s1", text: long})
+	m = next.(Model)
+
+	lines := m.renderPreviewPane(40, 5)
+	body := strings.Join(lines, "\n")
+	if strings.Contains(body, "…") {
+		t.Errorf("long line truncated instead of reflowed:\n%s", body)
+	}
+	if got := strings.Count(body, "x"); got != 60 {
+		t.Errorf("reflow lost content: got %d x's, want 60:\n%s", got, body)
+	}
+	// 60 chars wrap to a full 36-wide row plus a 24-char remainder.
+	if !strings.Contains(lines[1], strings.Repeat("x", 36)) {
+		t.Errorf("first content row not full width:\n%q", lines[1])
+	}
+	if !strings.Contains(lines[2], strings.Repeat("x", 24)) {
+		t.Errorf("wrap remainder missing on second row:\n%q", lines[2])
+	}
+}
+
+func TestReflowCarriesColorAcrossWraps(t *testing.T) {
+	// A colored logical line wider than the width keeps its color on the
+	// continuation row: Hardwrap drops the active style, reflow re-emits it.
+	got := reflow([]string{"\x1b[31mhello world\x1b[m"}, 5)
+	if len(got) < 2 {
+		t.Fatalf("expected the line to wrap into rows, got %q", got)
+	}
+	if !strings.HasPrefix(got[1], "\x1b[31m") {
+		t.Errorf("continuation row lost the color: %q", got[1])
+	}
+}
+
+func TestReflowCarriesColonDelimitedSGR(t *testing.T) {
+	// Colon-form SGR (truecolor and styled underlines kitty can emit) must
+	// carry across a wrap too, not just the semicolon form.
+	got := reflow([]string{"\x1b[38:2:255:0:0mhello world\x1b[m"}, 5)
+	if len(got) < 2 {
+		t.Fatalf("expected the line to wrap into rows, got %q", got)
+	}
+	if !strings.HasPrefix(got[1], "\x1b[38:2:255:0:0m") {
+		t.Errorf("continuation row dropped colon-form color: %q", got[1])
+	}
+}
+
+func TestReflowLeavesPlainTextUnstyled(t *testing.T) {
+	// Plain content gets no spurious style prefix on its continuation rows.
+	got := reflow([]string{strings.Repeat("x", 12)}, 5)
+	for i, row := range got {
+		if i > 0 && strings.Contains(row, "\x1b") {
+			t.Errorf("plain continuation row %d got an escape: %q", i, row)
+		}
+	}
+}
+
+func TestPreviewBoxStaysWithinBudgetWhenReflowed(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1 // session s1
+	m.showPreview = true
+	m.width, m.height = 50, 60 // stacked (width < splitMinWidth), tall terminal
+	// One long logical line that reflows into far more rows than the stacked
+	// preview's intended budget, but fewer than the short-terminal safety trim.
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("y", 2000)})
+	m = next.(Model)
+
+	content := len(m.renderPreviewBox(m.width)) - 2 // minus top+bottom borders
+	if budget := m.previewSize(); content > budget {
+		t.Errorf("reflowed box = %d content rows, want <= previewSize %d (list would collapse)", content, budget)
+	}
+}
+
+func TestPreviewContentPlaceholder(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 0 // repo row: no session selected
+	label, content := m.previewContent()
+	if label != "preview" {
+		t.Errorf("label on repo row = %q, want \"preview\"", label)
+	}
+	if len(content) != 1 || !strings.Contains(content[0], "select a session") {
+		t.Errorf("placeholder content = %q, want [\"select a session\"]", content)
+	}
+}
+
+func TestPreviewBoxKeepsPlaceholderOnShortTerminal(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 0 // repo row → "select a session" placeholder
+	m.height = 5 // keep = 5 - previewReservedRows < 0, no room to trim
+	box := strings.Join(m.renderPreviewBox(40), "\n")
+	if !strings.Contains(box, "select a session") {
+		t.Errorf("placeholder dropped on short terminal:\n%s", box)
+	}
+}
+
+func TestSplitLayoutSideBySide(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	m := applyLoad(twoSessionModel())
+	m.width, m.height = 100, 20
+	m.showPreview = true
+	m.cursor = 1 // session s1, named "first"
+	next, _ := m.Update(previewMsg{sid: "s1", text: "pane content"})
+	m = next.(Model)
+
+	out := strings.TrimSuffix(m.View(), "\n")
+	lines := strings.Split(out, "\n")
+	for _, ln := range lines {
+		if w := lipgloss.Width(ln); w != 100 {
+			t.Fatalf("line width = %d, want 100: %q", w, ln)
+		}
+	}
+	// A session row and the preview share the same physical row.
+	sideBySide := false
+	for _, ln := range lines {
+		if strings.Contains(ln, "first") && strings.Contains(ln, "│") {
+			sideBySide = true
+		}
+	}
+	if !sideBySide {
+		t.Fatalf("expected sidebar session beside the preview:\n%s", out)
+	}
+	if !strings.Contains(out, "preview · s1 (aaa)") {
+		t.Fatalf("preview pane label missing:\n%s", out)
+	}
+	if !strings.Contains(out, "pane content") {
+		t.Fatalf("preview content missing:\n%s", out)
+	}
+}
+
+func TestSplitShowsPlaceholderWithoutSelection(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.width, m.height = 100, 20
+	m.showPreview = true
+	m.cursor = 0 // repo row: nothing to preview
+
+	out := m.View()
+	if !strings.Contains(out, "select a session") {
+		t.Fatalf("expected placeholder in the main area:\n%s", out)
+	}
+	for _, ln := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if w := lipgloss.Width(ln); w != 100 {
+			t.Fatalf("line width = %d, want 100 (split active): %q", w, ln)
+		}
 	}
 }
 

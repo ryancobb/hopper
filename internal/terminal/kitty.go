@@ -72,28 +72,29 @@ func (k *Kitty) Focus(ctx context.Context, h Handle) error {
 	return err
 }
 
-// Preview returns the last `lines` non-empty screen lines of the window,
-// keeping the pane's ANSI colors.
+// Preview returns the last `lines` non-empty logical lines of the window,
+// keeping the pane's ANSI colors. Wrap markers are deliberately omitted: kitty
+// then rejoins soft-wrapped screen rows into one logical line, which the view
+// re-wraps to the preview pane's width instead of the source window's.
 func (k *Kitty) Preview(ctx context.Context, h Handle, lines int) (string, error) {
 	id, ok := h.(int)
 	if !ok {
 		return "", ErrBadHandle
 	}
-	out, err := k.run(ctx, "get-text", "--match", fmt.Sprintf("id:%d", id), "--extent", "screen", "--ansi", "--add-wrap-markers")
+	out, err := k.run(ctx, "get-text", "--match", fmt.Sprintf("id:%d", id), "--extent", "screen", "--ansi")
 	if err != nil {
 		return "", err
 	}
 	return lastNonEmptyLines(string(out), lines), nil
 }
 
-// lastNonEmptyLines keeps the last n visually non-empty screen rows. Without
-// wrap markers kitty rejoins soft-wrapped rows into one logical line, which
-// can be wider than the captured window; the markers are carriage returns,
-// so \n and \r both delimit rows. FieldsFunc drops the empty segments a \r\n
-// pair would produce, matching the blank-row filter below.
+// lastNonEmptyLines keeps the last n visually non-empty logical lines. Lines
+// are newline-delimited (no wrap markers are requested), and FieldsFunc drops
+// the empty segments a trailing newline would produce, matching the blank-line
+// filter below.
 func lastNonEmptyLines(s string, n int) string {
 	var kept []string
-	for _, ln := range strings.FieldsFunc(s, func(r rune) bool { return r == '\n' || r == '\r' }) {
+	for _, ln := range strings.FieldsFunc(s, func(r rune) bool { return r == '\n' }) {
 		if strings.TrimSpace(ansi.Strip(ln)) != "" {
 			kept = append(kept, ln)
 		}

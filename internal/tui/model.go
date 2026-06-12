@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"hopper/internal/repo"
 	"hopper/internal/source"
+	"hopper/internal/status"
 	"hopper/internal/terminal"
 )
 
@@ -40,6 +41,22 @@ type Model struct {
 	width     int
 	height    int
 	quitting  bool
+
+	spinnerFrame int  // advances on spinnerTickMsg to animate working glyphs
+	spinning     bool // whether the spinner tick is currently scheduled
+}
+
+// hasWorking reports whether any session is working — the only state the
+// spinner animates, so the spinner tick runs only while one exists.
+func (m Model) hasWorking() bool {
+	for _, g := range m.groups {
+		for _, it := range g.Items {
+			if it.Session.Kind == status.Working {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // rowAnchor identifies the row the cursor is on so a refresh can restore it.
@@ -50,13 +67,18 @@ type rowAnchor struct {
 }
 
 // New builds a Model from a session source, repo resolver, and terminal backend.
+// Preview starts on when the terminal can capture panes, so the split layout is
+// the default experience there; other terminals start on the plain list.
 func New(src source.Source, repos RepoResolver, term terminal.Terminal) Model {
 	return Model{src: src, repos: repos, term: term,
-		collapsed: map[string]bool{}, loading: true}
+		collapsed:   map[string]bool{},
+		loading:     true,
+		showPreview: term.Capabilities().Has(terminal.CapPreview)}
 }
 
 const (
 	refreshInterval = time.Second
+	spinnerInterval = 100 * time.Millisecond
 	loadTimeout     = 3 * time.Second
 	actionTimeout   = 2 * time.Second
 
@@ -66,6 +88,7 @@ const (
 )
 
 type tickMsg time.Time
+type spinnerTickMsg time.Time
 type loadedMsg struct {
 	items []Item
 	err   error
@@ -79,6 +102,15 @@ type previewMsg struct {
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// spinnerTickCmd drives the working-glyph animation. It runs faster than the
+// data tick and only advances the frame counter, so it never reloads sessions
+// or recaptures previews. It runs only while a session is working: a load that
+// reveals one starts it, and it lapses once none remain, so a fully idle screen
+// does no periodic redraw at all.
+func spinnerTickCmd() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg { return spinnerTickMsg(t) })
 }
 
 // loadCmd fetches and enriches sessions off the UI goroutine, bounded by a timeout.
@@ -127,14 +159,24 @@ func previewCmd(term terminal.Terminal, sid string, pid, lines int) tea.Cmd {
 	}
 }
 
-// previewSize is the number of pane lines to capture: roughly a third of the
-// terminal, clamped so the session list keeps most of the screen. A keypress
-// can race the first WindowSizeMsg, so an unknown height gets a sane default.
+// previewSize is the number of pane lines to capture. In the split layout the
+// preview fills the main area, so it tracks the body height; stacked, it takes
+// roughly a third of the screen. Both keep the session list most of the room
+// via the previewMin/Max clamps. A keypress can race the first WindowSizeMsg,
+// so an unknown height gets a sane default.
 func (m Model) previewSize() int {
 	if m.height <= 0 {
 		return previewDefaultLines
 	}
-	return min(max(m.height/3, previewMinLines), previewMaxLines)
+	n := m.height / 3
+	if m.useSplit(m.contentWidth()) {
+		// Body height is height - header(2) - footer(2); the pane's two
+		// borders take two more, leaving height-6 content rows. A status
+		// message or the filter prompt grows the footer by 2, so this can
+		// over-capture by up to two lines, which renderPreviewPane discards.
+		n = m.height - 6
+	}
+	return min(max(n, previewMinLines), previewMaxLines)
 }
 
 func (m Model) previewIfOpen() tea.Cmd {
@@ -148,7 +190,8 @@ func (m Model) previewIfOpen() tea.Cmd {
 	return previewCmd(m.term, r.Item.Session.ID, r.Item.Session.PID, m.previewSize())
 }
 
-// Init kicks off the first load and the refresh tick.
+// Init kicks off the first load and the refresh tick. The spinner tick starts
+// on demand, once a load reveals a working session.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(m.loadCmd(), tickCmd())
 }
@@ -169,9 +212,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, c)
 		}
 		return m, tea.Batch(cmds...)
+	case spinnerTickMsg:
+		if !m.hasWorking() {
+			m.spinning = false // nothing to animate; let the tick lapse
+			return m, nil
+		}
+		m.spinnerFrame++
+		return m, spinnerTickCmd()
 	case loadedMsg:
 		m.loading = false
 		m.applyLoaded(msg)
+		if !m.spinning && m.hasWorking() {
+			m.spinning = true // a working session appeared; (re)start the tick
+			return m, spinnerTickCmd()
+		}
 		return m, nil
 	case focusMsg:
 		if msg.err != nil {

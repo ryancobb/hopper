@@ -43,23 +43,6 @@ func classify(k status.Kind, age time.Duration) displayClass {
 	}
 }
 
-// label is the repo-breakdown segment word. Session rows keep their status
-// word from status.Kind, so "recent" appears only in repo headers.
-func (c displayClass) label() string {
-	switch c {
-	case classBlocked:
-		return "blocked"
-	case classWorking:
-		return "working"
-	case classRecentIdle:
-		return "recent"
-	case classIdle:
-		return "idle"
-	default:
-		return "unknown"
-	}
-}
-
 // icon is the single-cell status glyph; both idle classes share ○.
 func (c displayClass) icon() string {
 	switch c {

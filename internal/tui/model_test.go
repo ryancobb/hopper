@@ -139,22 +139,36 @@ func TestEnterOnRepoTogglesCollapse(t *testing.T) {
 	}
 }
 
-func TestTogglePreviewRequiresCapability(t *testing.T) {
-	m := applyLoad(twoSessionModel())
+func TestTogglePreviewDefaultsOnAndToggles(t *testing.T) {
+	m := applyLoad(twoSessionModel()) // CapPreview → preview on by default
+	if !m.showPreview {
+		t.Fatal("preview should default on when the terminal supports it")
+	}
 	m.cursor = 1
 	next, cmd := m.Update(key("p"))
 	m = next.(Model)
+	if m.showPreview || cmd != nil {
+		t.Fatal("p should toggle preview off and return no command")
+	}
+	next, cmd = m.Update(key("p"))
+	m = next.(Model)
 	if !m.showPreview || cmd == nil {
-		t.Fatalf("preview should open with a command")
+		t.Fatal("p should toggle preview back on and request a capture")
 	}
 
-	// backend without preview capability
-	m2 := applyLoad(twoSessionModel())
-	m2.term = &fakeTerm{caps: terminal.CapFocus}
+	// A terminal without preview capability: off by default, p warns.
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "s1", PID: 1, CWD: "/a", Name: "first", Kind: status.Working, UpdatedAt: time.Now()},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa"}}}
+	m2 := applyLoad(New(src, repos, &fakeTerm{caps: terminal.CapFocus}))
+	if m2.showPreview {
+		t.Fatal("preview should default off without capability")
+	}
 	next2, _ := m2.Update(key("p"))
 	m2 = next2.(Model)
 	if m2.showPreview || m2.statusMsg == "" {
-		t.Fatalf("preview should be refused without capability")
+		t.Fatal("p should refuse and warn without capability")
 	}
 }
 
@@ -202,6 +216,7 @@ func TestFilterBackspace(t *testing.T) {
 
 func TestPreviewSizeTracksHeight(t *testing.T) {
 	m := twoSessionModel()
+	m.width = 40 // narrow → stacked sizing
 	if got := m.previewSize(); got != previewDefaultLines {
 		t.Fatalf("unknown height: previewSize=%d want %d", got, previewDefaultLines)
 	}
@@ -219,30 +234,77 @@ func TestPreviewSizeTracksHeight(t *testing.T) {
 	}
 }
 
-func TestPreviewLineTruncatesAndResetsColor(t *testing.T) {
+func TestPreviewSizeSplit(t *testing.T) {
+	m := twoSessionModel()      // CapPreview → preview on
+	m.width, m.height = 100, 30 // width ≥ splitMinWidth(60) → split active
+	// split: body = height - header(2) - footer(2) - borders(2) = 24.
+	if got := m.previewSize(); got != 24 {
+		t.Fatalf("split previewSize = %d, want 24", got)
+	}
+}
+
+func TestSpinnerTickAdvancesFrame(t *testing.T) {
+	m := applyLoad(twoSessionModel()) // s1 is working → load starts the spinner
+	if !m.spinning {
+		t.Fatal("loading a working session should start the spinner")
+	}
+	if m.spinnerFrame != 0 {
+		t.Fatalf("initial spinner frame = %d, want 0", m.spinnerFrame)
+	}
+	next, cmd := m.Update(spinnerTickMsg(time.Now()))
+	m = next.(Model)
+	if m.spinnerFrame != 1 {
+		t.Fatalf("after tick spinner frame = %d, want 1", m.spinnerFrame)
+	}
+	if cmd == nil {
+		t.Fatal("spinner tick should reschedule while a session is working")
+	}
+}
+
+func TestSpinnerStopsWithoutWorking(t *testing.T) {
+	// With nothing working, the spinner tick lapses: no reschedule, no advance.
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "s1", PID: 1, CWD: "/a", Name: "idle", Kind: status.Idle, UpdatedAt: time.Now()},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa"}}}
+	m := applyLoad(New(src, repos, &fakeTerm{}))
+	if m.spinning {
+		t.Fatal("spinner should not start with no working session")
+	}
+	next, cmd := m.Update(spinnerTickMsg(time.Now()))
+	m = next.(Model)
+	if cmd != nil {
+		t.Fatal("spinner tick should not reschedule when nothing is working")
+	}
+	if m.spinnerFrame != 0 {
+		t.Fatalf("frame should hold at 0 with no working session, got %d", m.spinnerFrame)
+	}
+}
+
+func TestBoxLineTruncatesAndResetsColor(t *testing.T) {
 	// A red line longer than the view, with no closing reset: it must be
 	// truncated to fit between the box borders, and its color must be reset
 	// before the right border so it cannot tint it.
-	line := previewLine("\x1b[31m"+strings.Repeat("x", 50), 30)
+	line := boxLine("\x1b[31m"+strings.Repeat("x", 50), 30)
 	if w := lipgloss.Width(line); w != 30 {
-		t.Errorf("preview line width = %d, want 30: %q", w, line)
+		t.Errorf("box line width = %d, want 30: %q", w, line)
 	}
 	if !strings.HasPrefix(line, "│ ") || !strings.HasSuffix(line, "│") {
-		t.Errorf("preview line missing box borders: %q", line)
+		t.Errorf("box line missing box borders: %q", line)
 	}
 	if !strings.Contains(line, ansi.ResetStyle+" │") {
 		t.Errorf("color should be reset before the right border: %q", line)
 	}
 	// A short line is padded so the right border stays aligned.
-	line = previewLine("hi", 30)
+	line = boxLine("hi", 30)
 	if w := lipgloss.Width(line); w != 30 {
-		t.Errorf("padded preview line width = %d, want 30: %q", w, line)
+		t.Errorf("padded box line width = %d, want 30: %q", w, line)
 	}
 }
 
 func TestPreviewPanelBoxed(t *testing.T) {
 	m := applyLoad(twoSessionModel())
-	m.width = 60
+	m.width = 50
 	m.cursor = 1 // first session row (s1)
 	m.showPreview = true
 	next, _ := m.Update(previewMsg{sid: "s1", text: "pane line"})
@@ -260,8 +322,8 @@ func TestPreviewPanelBoxed(t *testing.T) {
 	}
 	for _, ln := range strings.Split(out, "\n") {
 		if strings.HasPrefix(ln, "╭") || strings.HasPrefix(ln, "│") || strings.HasPrefix(ln, "╰") {
-			if w := lipgloss.Width(ln); w != 60 {
-				t.Errorf("box line width = %d, want 60: %q", w, ln)
+			if w := lipgloss.Width(ln); w != 50 {
+				t.Errorf("box line width = %d, want 50: %q", w, ln)
 			}
 		}
 	}
@@ -287,10 +349,10 @@ func TestPreviewPanelBoxed(t *testing.T) {
 	}
 }
 
-func TestPreviewTopWideRunesStayInWidth(t *testing.T) {
+func TestBoxTopWideRunesStayInWidth(t *testing.T) {
 	// Rune count and cell width disagree for CJK names; the top border must
 	// be measured in cells or it overflows and the ╮ corner gets clipped.
-	top := previewTop("preview · abcd (日本語のリポジトリ名)", 30)
+	top := boxTop("preview · abcd (日本語のリポジトリ名)", 30)
 	if w := lipgloss.Width(top); w != 30 {
 		t.Errorf("CJK label top border width = %d, want 30: %q", w, top)
 	}
@@ -301,7 +363,7 @@ func TestPreviewNotShownForOtherSession(t *testing.T) {
 	// moves to another session the stale pane must not render under the new
 	// session's label while the fresh capture is in flight.
 	m := applyLoad(twoSessionModel())
-	m.width = 60
+	m.width = 50
 	m.showPreview = true
 	m.cursor = 1 // session s1
 	next, _ := m.Update(previewMsg{sid: "s1", text: "s1 pane"})
@@ -319,7 +381,7 @@ func TestViewFitsShortTerminalWithPreview(t *testing.T) {
 	// At heights where the old divider+label chrome fit exactly, the boxed
 	// preview must still fit: the preview gives way before the footer does.
 	m := applyLoad(twoSessionModel())
-	m.width, m.height = 80, 16
+	m.width, m.height = 50, 16
 	m.showPreview = true
 	m.cursor = 1
 	next, _ := m.Update(previewMsg{sid: "s1",
@@ -347,7 +409,7 @@ func TestViewFitsTerminalHeight(t *testing.T) {
 	src := fakeSource{label: "Claude Code", sessions: sessions}
 	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa"}}}
 	m := applyLoad(New(src, repos, &fakeTerm{caps: terminal.CapPreview}))
-	m.width, m.height = 80, 24
+	m.width, m.height = 50, 24
 	m.showPreview = true
 	next, _ := m.Update(key("G")) // cursor on the last session
 	m = next.(Model)
@@ -380,8 +442,11 @@ func TestSplitRowsResolvesEmbeddedNewlines(t *testing.T) {
 
 func TestViewContents(t *testing.T) {
 	m := applyLoad(twoSessionModel())
+	m.width = 40
 	out := m.View()
-	for _, want := range []string{"fake", "aaa", "working", "idle", "q quit"} {
+	// Rows are icon-only (no status words anywhere), so assert the repo label
+	// and session names instead.
+	for _, want := range []string{"fake", "aaa", "first", "second", "q quit"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("view missing %q\n---\n%s", want, out)
 		}
@@ -392,6 +457,23 @@ func TestViewEmpty(t *testing.T) {
 	m := applyLoad(New(fakeSource{}, fakeRepos{}, &fakeTerm{}))
 	if !strings.Contains(m.View(), "no live sessions") {
 		t.Errorf("empty view: %s", m.View())
+	}
+}
+
+func TestSplitFullWidthWithEmptyList(t *testing.T) {
+	// CapPreview defaults preview on, so a wide terminal renders the split even
+	// with no sessions. The single "no live sessions" body line must not
+	// collapse the sidebar column: every row stays the full width.
+	m := applyLoad(New(fakeSource{}, fakeRepos{}, &fakeTerm{caps: terminal.CapPreview}))
+	m.width, m.height = 100, 20
+	out := strings.TrimSuffix(m.View(), "\n")
+	if !strings.Contains(out, "no live sessions") {
+		t.Fatalf("empty body missing:\n%s", out)
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(ln); w != 100 {
+			t.Fatalf("line width = %d, want 100 (sidebar box must fill its column): %q", w, ln)
+		}
 	}
 }
 

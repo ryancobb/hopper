@@ -67,23 +67,27 @@ func TestKittyPreviewTail(t *testing.T) {
 		t.Fatalf("preview tail: %q", out)
 	}
 	got := strings.Join(calls[0], " ")
-	if got != "get-text --match id:4 --extent screen --ansi --add-wrap-markers" {
+	if got != "get-text --match id:4 --extent screen --ansi" {
 		t.Fatalf("preview args: %q", got)
 	}
 }
 
-func TestKittyPreviewSplitsWrapMarkers(t *testing.T) {
-	// Soft-wrapped screen rows come back as one logical line unless wrap
-	// markers are requested; markers are carriage returns. Each screen row
-	// must become its own preview line so widths match the captured window.
-	text := "wrapped-a\rwrapped-b\nplain\n"
-	k := fakeKitty(text, nil)
+func TestKittyPreviewCapturesLogicalLines(t *testing.T) {
+	// The preview reflows to the pane width in the view, so the capture must
+	// hand back logical lines: no --add-wrap-markers, letting kitty rejoin
+	// soft-wrapped screen rows into one line we can re-wrap.
+	var calls [][]string
+	k := fakeKitty("one logical line\n", &calls)
 	out, err := k.Preview(context.Background(), 4, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "wrapped-a\nwrapped-b\nplain" {
-		t.Fatalf("wrap markers not split into rows: %q", out)
+	if got := strings.Join(calls[0], " "); strings.Contains(got, "--add-wrap-markers") {
+		t.Fatalf("capture should not request wrap markers: %q", got)
+	}
+	// A logical line comes through intact (not split into rows).
+	if out != "one logical line" {
+		t.Fatalf("logical line not preserved: %q", out)
 	}
 }
 
