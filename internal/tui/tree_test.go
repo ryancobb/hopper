@@ -37,10 +37,6 @@ func TestBuildGroupsSortsAndAggregates(t *testing.T) {
 	if groups[0].Label != "aaa" || groups[1].Label != "bbb" {
 		t.Fatalf("group order: %s,%s", groups[0].Label, groups[1].Label)
 	}
-	// aaa aggregate = blocked (worst of)
-	if groups[0].Kind != status.Blocked {
-		t.Fatalf("aaa aggregate = %v", groups[0].Kind)
-	}
 	// within aaa, blocked (s3) sorts before idle (s2)
 	if groups[0].Items[0].Session.ID != "s3" {
 		t.Fatalf("aaa first item = %s", groups[0].Items[0].Session.ID)

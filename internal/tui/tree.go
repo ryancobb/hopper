@@ -6,7 +6,6 @@ import (
 
 	"hopper/internal/repo"
 	"hopper/internal/source"
-	"hopper/internal/status"
 )
 
 // Item is a live session paired with its resolved repo, ready for display.
@@ -20,7 +19,6 @@ type Group struct {
 	Key   string // repo root, or "" for the no-repo bucket
 	Label string
 	Items []Item
-	Kind  status.Kind // aggregate (worst of)
 }
 
 // RowKind distinguishes repo header rows from session rows.
@@ -38,7 +36,7 @@ type Row struct {
 	Item  *Item
 }
 
-// BuildGroups groups items by repo root, sorts, and computes aggregate status.
+// BuildGroups groups items by repo root and sorts.
 func BuildGroups(items []Item) []Group {
 	byKey := map[string]*Group{}
 	var order []string
@@ -50,9 +48,6 @@ func BuildGroups(items []Item) []Group {
 			order = append(order, it.Repo.Root)
 		}
 		g.Items = append(g.Items, it)
-		if it.Session.Kind.Rank() > g.Kind.Rank() {
-			g.Kind = it.Session.Kind
-		}
 	}
 	groups := make([]Group, 0, len(order))
 	for _, k := range order {
