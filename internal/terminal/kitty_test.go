@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -18,7 +19,7 @@ const lsFixture = `[
 ]`
 
 func fakeKitty(out string, capture *[][]string) *Kitty {
-	return &Kitty{run: func(args ...string) ([]byte, error) {
+	return &Kitty{run: func(_ context.Context, args ...string) ([]byte, error) {
 		if capture != nil {
 			*capture = append(*capture, args)
 		}
@@ -28,15 +29,16 @@ func fakeKitty(out string, capture *[][]string) *Kitty {
 
 func TestKittyLocate(t *testing.T) {
 	k := fakeKitty(lsFixture, nil)
-	h, ok := k.Locate(97046)
+	ctx := context.Background()
+	h, ok := k.Locate(ctx, 97046)
 	if !ok || h.(int) != 10 {
 		t.Fatalf("want window 10, got %v ok=%v", h, ok)
 	}
-	h, ok = k.Locate(42210)
+	h, ok = k.Locate(ctx, 42210)
 	if !ok || h.(int) != 4 {
 		t.Fatalf("want window 4, got %v ok=%v", h, ok)
 	}
-	if _, ok := k.Locate(999); ok {
+	if _, ok := k.Locate(ctx, 999); ok {
 		t.Fatal("999 should not be found")
 	}
 }
@@ -44,7 +46,7 @@ func TestKittyLocate(t *testing.T) {
 func TestKittyFocusCommand(t *testing.T) {
 	var calls [][]string
 	k := fakeKitty("", &calls)
-	if err := k.Focus(10); err != nil {
+	if err := k.Focus(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
 	got := strings.Join(calls[0], " ")
@@ -57,7 +59,7 @@ func TestKittyPreviewTail(t *testing.T) {
 	text := "line1\nline2\n\nline3\nline4\n\n\n"
 	var calls [][]string
 	k := fakeKitty(text, &calls)
-	out, err := k.Preview(4, 2)
+	out, err := k.Preview(context.Background(), 4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}

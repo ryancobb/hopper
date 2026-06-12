@@ -1,31 +1,25 @@
 package tui
 
 import (
+	"context"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"hopper/internal/repo"
-	"hopper/internal/session"
+	"hopper/internal/source"
 	"hopper/internal/terminal"
 )
 
-// Loader, RepoResolver, Namer are the model's dependencies (interfaces for testing).
-type Loader interface {
-	Load() ([]session.Session, error)
-}
+// RepoResolver resolves a working directory to its repo info.
 type RepoResolver interface {
-	Resolve(cwd string) repo.Info
-}
-type Namer interface {
-	Name(sessionID string) string
+	Resolve(ctx context.Context, cwd string) repo.Info
 }
 
 // Model is the Bubble Tea model.
 type Model struct {
-	loader Loader
-	repos  RepoResolver
-	names  Namer
-	term   terminal.Terminal
+	src   source.Source
+	repos RepoResolver
+	term  terminal.Terminal
 
 	groups    []Group
 	rows      []Row
@@ -41,18 +35,24 @@ type Model struct {
 
 	statusMsg string
 	loadErr   error
+	loading   bool
 	width     int
 	height    int
 	quitting  bool
 }
 
-// New builds a Model from its dependencies.
-func New(loader Loader, repos RepoResolver, names Namer, term terminal.Terminal) Model {
-	return Model{loader: loader, repos: repos, names: names, term: term,
-		collapsed: map[string]bool{}}
+// New builds a Model from a session source, repo resolver, and terminal backend.
+func New(src source.Source, repos RepoResolver, term terminal.Terminal) Model {
+	return Model{src: src, repos: repos, term: term,
+		collapsed: map[string]bool{}, loading: true}
 }
 
-const refreshInterval = time.Second
+const (
+	refreshInterval = time.Second
+	loadTimeout     = 3 * time.Second
+	actionTimeout   = 2 * time.Second
+	previewLines    = 6
+)
 
 type tickMsg time.Time
 type loadedMsg struct {
@@ -69,22 +69,19 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-// loadCmd loads sessions and enriches them off the UI goroutine.
+// loadCmd fetches and enriches sessions off the UI goroutine, bounded by a timeout.
 func (m Model) loadCmd() tea.Cmd {
-	loader, repos, names := m.loader, m.repos, m.names
+	src, repos := m.src, m.repos
 	return func() tea.Msg {
-		sessions, err := loader.Load()
+		ctx, cancel := context.WithTimeout(context.Background(), loadTimeout)
+		defer cancel()
+		sessions, err := src.Sessions(ctx)
 		if err != nil {
 			return loadedMsg{err: err}
 		}
 		items := make([]Item, 0, len(sessions))
 		for _, s := range sessions {
-			items = append(items, Item{
-				Session: s,
-				Repo:    repos.Resolve(s.CWD),
-				Name:    names.Name(s.ID),
-				Kind:    KindOf(s.Status),
-			})
+			items = append(items, Item{Session: s, Repo: repos.Resolve(ctx, s.CWD)})
 		}
 		return loadedMsg{items: items}
 	}
@@ -92,11 +89,13 @@ func (m Model) loadCmd() tea.Cmd {
 
 func focusCmd(term terminal.Terminal, pid int) tea.Cmd {
 	return func() tea.Msg {
-		h, ok := term.Locate(pid)
+		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
+		defer cancel()
+		h, ok := term.Locate(ctx, pid)
 		if !ok {
 			return focusMsg{err: terminal.ErrNotFound}
 		}
-		return focusMsg{err: term.Focus(h)}
+		return focusMsg{err: term.Focus(ctx, h)}
 	}
 }
 
@@ -105,16 +104,16 @@ func previewCmd(term terminal.Terminal, pid, lines int) tea.Cmd {
 		if !term.Capabilities().Has(terminal.CapPreview) {
 			return previewMsg{err: terminal.ErrUnsupported}
 		}
-		h, ok := term.Locate(pid)
+		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
+		defer cancel()
+		h, ok := term.Locate(ctx, pid)
 		if !ok {
 			return previewMsg{err: terminal.ErrNotFound}
 		}
-		text, err := term.Preview(h, lines)
+		text, err := term.Preview(ctx, h, lines)
 		return previewMsg{text: text, err: err}
 	}
 }
-
-const previewLines = 6
 
 func (m Model) previewIfOpen() tea.Cmd {
 	if !m.showPreview || m.cursor < 0 || m.cursor >= len(m.rows) {
@@ -139,12 +138,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case tickMsg:
-		cmds := []tea.Cmd{m.loadCmd(), tickCmd()}
+		cmds := []tea.Cmd{tickCmd()}
+		if !m.loading {
+			m.loading = true
+			cmds = append(cmds, m.loadCmd())
+		}
 		if c := m.previewIfOpen(); c != nil {
 			cmds = append(cmds, c)
 		}
 		return m, tea.Batch(cmds...)
 	case loadedMsg:
+		m.loading = false
 		m.applyLoaded(msg)
 		return m, nil
 	case focusMsg:
@@ -250,6 +254,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		return m.togglePreview()
 	case "r":
+		if m.loading {
+			return m, nil
+		}
+		m.loading = true
 		return m, m.loadCmd()
 	case "/":
 		m.filtering = true

@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -9,13 +10,13 @@ import (
 
 // Kitty controls kitty via `kitty @`.
 type Kitty struct {
-	run func(args ...string) ([]byte, error)
+	run func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 // NewKitty returns a kitty backend talking to `kitty @` over KITTY_LISTEN_ON.
 func NewKitty() *Kitty {
-	return &Kitty{run: func(args ...string) ([]byte, error) {
-		return exec.Command("kitty", append([]string{"@"}, args...)...).Output()
+	return &Kitty{run: func(ctx context.Context, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, "kitty", append([]string{"@"}, args...)...).Output()
 	}}
 }
 
@@ -36,8 +37,8 @@ type klsOSWindow struct {
 }
 
 // Locate finds the kitty window whose foreground processes include pid.
-func (k *Kitty) Locate(pid int) (Handle, bool) {
-	out, err := k.run("ls")
+func (k *Kitty) Locate(ctx context.Context, pid int) (Handle, bool) {
+	out, err := k.run(ctx, "ls")
 	if err != nil {
 		return nil, false
 	}
@@ -60,22 +61,22 @@ func (k *Kitty) Locate(pid int) (Handle, bool) {
 }
 
 // Focus raises the window (and its tab/OS-window).
-func (k *Kitty) Focus(h Handle) error {
+func (k *Kitty) Focus(ctx context.Context, h Handle) error {
 	id, ok := h.(int)
 	if !ok {
 		return ErrBadHandle
 	}
-	_, err := k.run("focus-window", "--match", fmt.Sprintf("id:%d", id))
+	_, err := k.run(ctx, "focus-window", "--match", fmt.Sprintf("id:%d", id))
 	return err
 }
 
 // Preview returns the last `lines` non-empty screen lines of the window.
-func (k *Kitty) Preview(h Handle, lines int) (string, error) {
+func (k *Kitty) Preview(ctx context.Context, h Handle, lines int) (string, error) {
 	id, ok := h.(int)
 	if !ok {
 		return "", ErrBadHandle
 	}
-	out, err := k.run("get-text", "--match", fmt.Sprintf("id:%d", id), "--extent", "screen")
+	out, err := k.run(ctx, "get-text", "--match", fmt.Sprintf("id:%d", id), "--extent", "screen")
 	if err != nil {
 		return "", err
 	}

@@ -5,24 +5,29 @@ import (
 	"time"
 
 	"hopper/internal/repo"
-	"hopper/internal/session"
+	"hopper/internal/source"
+	"hopper/internal/status"
 )
 
-func item(id, root, name, branch, status string, ago time.Duration) Item {
+func item(id, root, name, branch string, kind status.Kind, ago time.Duration) Item {
 	return Item{
-		Session: session.Session{ID: id, CWD: root, Status: status,
-			StatusUpdatedAt: time.Now().Add(-ago)},
+		Session: source.Session{
+			ID:        id,
+			Name:      name + "-prompt",
+			CWD:       root,
+			Kind:      kind,
+			RawStatus: kind.Label(),
+			UpdatedAt: time.Now().Add(-ago),
+		},
 		Repo: repo.Info{Root: root, Name: name, Branch: branch},
-		Name: name + "-prompt",
-		Kind: KindOf(status),
 	}
 }
 
 func TestBuildGroupsSortsAndAggregates(t *testing.T) {
 	items := []Item{
-		item("s1", "/b", "bbb", "main", "idle", time.Minute),
-		item("s2", "/a", "aaa", "main", "idle", 2*time.Minute),
-		item("s3", "/a", "aaa", "feat", "waiting", time.Minute), // blocked
+		item("s1", "/b", "bbb", "main", status.Idle, time.Minute),
+		item("s2", "/a", "aaa", "main", status.Idle, 2*time.Minute),
+		item("s3", "/a", "aaa", "feat", status.Blocked, time.Minute),
 	}
 	groups := BuildGroups(items)
 	if len(groups) != 2 {
@@ -33,7 +38,7 @@ func TestBuildGroupsSortsAndAggregates(t *testing.T) {
 		t.Fatalf("group order: %s,%s", groups[0].Label, groups[1].Label)
 	}
 	// aaa aggregate = blocked (worst of)
-	if groups[0].Kind != StatusBlocked {
+	if groups[0].Kind != status.Blocked {
 		t.Fatalf("aaa aggregate = %v", groups[0].Kind)
 	}
 	// within aaa, blocked (s3) sorts before idle (s2)
@@ -44,8 +49,8 @@ func TestBuildGroupsSortsAndAggregates(t *testing.T) {
 
 func TestFlattenCollapse(t *testing.T) {
 	groups := BuildGroups([]Item{
-		item("s1", "/a", "aaa", "main", "idle", time.Minute),
-		item("s2", "/a", "aaa", "main", "busy", time.Minute),
+		item("s1", "/a", "aaa", "main", status.Idle, time.Minute),
+		item("s2", "/a", "aaa", "main", status.Working, time.Minute),
 	})
 	all := Flatten(groups, map[string]bool{}, "")
 	if len(all) != 3 { // 1 repo + 2 sessions
@@ -59,8 +64,8 @@ func TestFlattenCollapse(t *testing.T) {
 
 func TestFlattenFilter(t *testing.T) {
 	groups := BuildGroups([]Item{
-		item("s1", "/a", "alpha", "main", "idle", time.Minute),
-		item("s2", "/b", "beta", "feature-x", "idle", time.Minute),
+		item("s1", "/a", "alpha", "main", status.Idle, time.Minute),
+		item("s2", "/b", "beta", "feature-x", status.Idle, time.Minute),
 	})
 	rows := Flatten(groups, map[string]bool{}, "feature")
 	// only beta group matches (by branch); ignores collapse
@@ -69,5 +74,18 @@ func TestFlattenFilter(t *testing.T) {
 	}
 	if rows[0].Group.Label != "beta" {
 		t.Fatalf("filtered group = %s", rows[0].Group.Label)
+	}
+}
+
+func TestBuildGroupsNoRepo(t *testing.T) {
+	groups := BuildGroups([]Item{
+		item("s1", "", "(no repo)", "", status.Working, time.Minute),
+	})
+	if len(groups) != 1 || groups[0].Key != "" || groups[0].Label != "(no repo)" {
+		t.Fatalf("no-repo group: %+v", groups)
+	}
+	rows := Flatten(groups, map[string]bool{"": true}, "")
+	if len(rows) != 1 || rows[0].Kind != RowRepo {
+		t.Fatalf("collapsed no-repo should be just the repo row, got %d", len(rows))
 	}
 }

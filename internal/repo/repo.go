@@ -2,6 +2,7 @@
 package repo
 
 import (
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -19,10 +20,10 @@ type Info struct {
 // GitRunner runs git commands. Injected for testing.
 type GitRunner interface {
 	Available() bool
-	Run(dir string, args ...string) (string, error) // git -C dir args...
+	Run(ctx context.Context, dir string, args ...string) (string, error) // git -C dir args...
 }
 
-// Resolver caches root resolution permanently and branch with a short TTL.
+// Resolver caches successful root resolution permanently and branch with a short TTL.
 type Resolver struct {
 	git GitRunner
 	now func() time.Time
@@ -54,17 +55,17 @@ func NewResolver(git GitRunner) *Resolver {
 }
 
 // Resolve returns the repo Info for a working directory.
-func (r *Resolver) Resolve(cwd string) Info {
-	rr := r.resolveRoot(cwd)
+func (r *Resolver) Resolve(ctx context.Context, cwd string) Info {
+	rr := r.resolveRoot(ctx, cwd)
 	info := Info{Name: rr.name}
 	if rr.inRepo {
 		info.Root = rr.root
-		info.Branch = r.resolveBranch(rr.root)
+		info.Branch = r.resolveBranch(ctx, rr.root)
 	}
 	return info
 }
 
-func (r *Resolver) resolveRoot(cwd string) rootResult {
+func (r *Resolver) resolveRoot(ctx context.Context, cwd string) rootResult {
 	r.mu.Lock()
 	if v, ok := r.roots[cwd]; ok {
 		r.mu.Unlock()
@@ -76,10 +77,13 @@ func (r *Resolver) resolveRoot(cwd string) rootResult {
 	if !r.git.Available() {
 		// No git: treat the cwd as its own group, blank branch.
 		res = rootResult{root: cwd, name: filepath.Base(cwd), inRepo: true}
-	} else if out, err := r.git.Run(cwd, "rev-parse", "--show-toplevel"); err == nil && out != "" {
+	} else if out, err := r.git.Run(ctx, cwd, "rev-parse", "--show-toplevel"); err == nil && out != "" {
 		res = rootResult{root: out, name: filepath.Base(out), inRepo: true}
 	} else {
-		res = rootResult{name: "(no repo)"}
+		// Don't cache failures: a transient git error (index.lock, a slow FS,
+		// a context timeout) must not pin this cwd to "(no repo)" forever.
+		// Returning without storing lets the next tick retry.
+		return rootResult{name: "(no repo)"}
 	}
 
 	r.mu.Lock()
@@ -88,7 +92,7 @@ func (r *Resolver) resolveRoot(cwd string) rootResult {
 	return res
 }
 
-func (r *Resolver) resolveBranch(root string) string {
+func (r *Resolver) resolveBranch(ctx context.Context, root string) string {
 	if !r.git.Available() {
 		return ""
 	}
@@ -99,7 +103,7 @@ func (r *Resolver) resolveBranch(root string) string {
 	}
 	r.mu.Unlock()
 
-	out, err := r.git.Run(root, "branch", "--show-current")
+	out, err := r.git.Run(ctx, root, "branch", "--show-current")
 	if err != nil {
 		out = ""
 	}
@@ -118,11 +122,13 @@ func NewExecGit() *ExecGit {
 	return &ExecGit{available: err == nil}
 }
 
+// Available reports whether git was found on PATH.
 func (g *ExecGit) Available() bool { return g.available }
 
-func (g *ExecGit) Run(dir string, args ...string) (string, error) {
+// Run executes `git -C dir args...` bounded by ctx, returning trimmed stdout.
+func (g *ExecGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
 	full := append([]string{"-C", dir}, args...)
-	out, err := exec.Command("git", full...).Output()
+	out, err := exec.CommandContext(ctx, "git", full...).Output()
 	if err != nil {
 		return "", err
 	}

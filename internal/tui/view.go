@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"hopper/internal/status"
 )
 
 const footer = "j/k move · h/l fold · Enter focus · p preview · / filter · r refresh · q quit"
@@ -16,8 +17,8 @@ func (m Model) View() string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Claude Code Sessions   %s · %d sessions · %d repos\n\n",
-		m.term.Name(), m.countSessions(), len(m.groups))
+	fmt.Fprintf(&b, "%s   %s · %d sessions · %d repos\n\n",
+		m.src.Label(), m.term.Name(), m.countSessions(), len(m.groups))
 
 	switch {
 	case m.loadErr != nil:
@@ -88,45 +89,45 @@ func (m Model) renderRow(i int, r Row) string {
 			st.Render(icon(r.Group.Kind)), st.Render(r.Group.Kind.Label()))
 	}
 	it := r.Item
-	statusField := statusStyle(it.Kind).Render(fmt.Sprintf("%-8s", statusText(it)))
+	statusField := statusStyle(it.Session.Kind).Render(fmt.Sprintf("%-8s", statusText(it)))
 	line := fmt.Sprintf("%s    %-4s  %-32s %-14s %s %s",
-		cursor, short(it.Session.ID), it.Name, it.Repo.Branch,
-		statusField, shortAge(time.Since(it.Session.StatusUpdatedAt)))
-	if it.Kind == StatusBlocked && it.Session.WaitingFor != "" {
+		cursor, short(it.Session.ID), it.Session.Name, it.Repo.Branch,
+		statusField, shortAge(time.Since(it.Session.UpdatedAt)))
+	if it.Session.Kind == status.Blocked && it.Session.WaitingFor != "" {
 		line += " (" + it.Session.WaitingFor + ")"
 	}
 	return line
 }
 
-func statusStyle(k StatusKind) lipgloss.Style {
+func statusStyle(k status.Kind) lipgloss.Style {
 	switch k {
-	case StatusWorking:
+	case status.Working:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	case StatusBlocked:
+	case status.Blocked:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	case StatusIdle:
+	case status.Idle:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	default:
 		return lipgloss.NewStyle()
 	}
 }
 
-// statusText shows the raw status verbatim for unknown kinds, so new Claude Code
+// statusText shows the raw status verbatim for unknown kinds, so new provider
 // states aren't hidden behind "unknown".
 func statusText(it *Item) string {
-	if it.Kind == StatusUnknown && it.Session.Status != "" {
-		return it.Session.Status
+	if it.Session.Kind == status.Unknown && it.Session.RawStatus != "" {
+		return it.Session.RawStatus
 	}
-	return it.Kind.Label()
+	return it.Session.Kind.Label()
 }
 
-func icon(k StatusKind) string {
+func icon(k status.Kind) string {
 	switch k {
-	case StatusWorking:
+	case status.Working:
 		return "●"
-	case StatusBlocked:
+	case status.Blocked:
 		return "⚠"
-	case StatusIdle:
+	case status.Idle:
 		return "○"
 	default:
 		return "·"

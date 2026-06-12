@@ -52,3 +52,15 @@ func TestLoadEmptyDir(t *testing.T) {
 		t.Fatalf("want 0, got %d", len(got))
 	}
 }
+
+func TestLoadMissingDir(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	l := NewLoader(missing, func(int) bool { return true })
+	got, err := l.Load()
+	if err != nil {
+		t.Fatalf("missing dir should not error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("want nil, got %v", got)
+	}
+}

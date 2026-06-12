@@ -5,15 +5,14 @@ import (
 	"strings"
 
 	"hopper/internal/repo"
-	"hopper/internal/session"
+	"hopper/internal/source"
+	"hopper/internal/status"
 )
 
-// Item is a session enriched for display.
+// Item is a live session paired with its resolved repo, ready for display.
 type Item struct {
-	Session session.Session
+	Session source.Session
 	Repo    repo.Info
-	Name    string
-	Kind    StatusKind
 }
 
 // Group is a repo with its sessions.
@@ -21,7 +20,7 @@ type Group struct {
 	Key   string // repo root, or "" for the no-repo bucket
 	Label string
 	Items []Item
-	Kind  StatusKind // aggregate (worst of)
+	Kind  status.Kind // aggregate (worst of)
 }
 
 // RowKind distinguishes repo header rows from session rows.
@@ -51,8 +50,8 @@ func BuildGroups(items []Item) []Group {
 			order = append(order, it.Repo.Root)
 		}
 		g.Items = append(g.Items, it)
-		if it.Kind.Rank() > g.Kind.Rank() {
-			g.Kind = it.Kind
+		if it.Session.Kind.Rank() > g.Kind.Rank() {
+			g.Kind = it.Session.Kind
 		}
 	}
 	groups := make([]Group, 0, len(order))
@@ -60,10 +59,10 @@ func BuildGroups(items []Item) []Group {
 		g := byKey[k]
 		sort.SliceStable(g.Items, func(i, j int) bool {
 			a, b := g.Items[i], g.Items[j]
-			if a.Kind.Rank() != b.Kind.Rank() {
-				return a.Kind.Rank() > b.Kind.Rank()
+			if a.Session.Kind.Rank() != b.Session.Kind.Rank() {
+				return a.Session.Kind.Rank() > b.Session.Kind.Rank()
 			}
-			return a.Session.StatusUpdatedAt.After(b.Session.StatusUpdatedAt)
+			return a.Session.UpdatedAt.After(b.Session.UpdatedAt)
 		})
 		groups = append(groups, *g)
 	}
@@ -100,7 +99,7 @@ func filterItems(items []Item, f string) []Item {
 	var out []Item
 	for _, it := range items {
 		if strings.Contains(strings.ToLower(it.Repo.Name), f) ||
-			strings.Contains(strings.ToLower(it.Name), f) ||
+			strings.Contains(strings.ToLower(it.Session.Name), f) ||
 			strings.Contains(strings.ToLower(it.Repo.Branch), f) {
 			out = append(out, it)
 		}

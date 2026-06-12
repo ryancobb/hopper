@@ -2,6 +2,7 @@
 package terminal
 
 import (
+	"context"
 	"errors"
 	"os"
 )
@@ -24,9 +25,9 @@ type Handle any
 type Terminal interface {
 	Name() string
 	Capabilities() Capability
-	Locate(pid int) (Handle, bool)
-	Focus(h Handle) error
-	Preview(h Handle, lines int) (string, error)
+	Locate(ctx context.Context, pid int) (Handle, bool)
+	Focus(ctx context.Context, h Handle) error
+	Preview(ctx context.Context, h Handle, lines int) (string, error)
 }
 
 // Errors returned by backends.
@@ -39,11 +40,11 @@ var (
 // none is the fallback backend with no capabilities.
 type none struct{}
 
-func (none) Name() string                        { return "no terminal" }
-func (none) Capabilities() Capability            { return 0 }
-func (none) Locate(int) (Handle, bool)           { return nil, false }
-func (none) Focus(Handle) error                  { return ErrUnsupported }
-func (none) Preview(Handle, int) (string, error) { return "", ErrUnsupported }
+func (none) Name() string                                         { return "no terminal" }
+func (none) Capabilities() Capability                             { return 0 }
+func (none) Locate(context.Context, int) (Handle, bool)           { return nil, false }
+func (none) Focus(context.Context, Handle) error                  { return ErrUnsupported }
+func (none) Preview(context.Context, Handle, int) (string, error) { return "", ErrUnsupported }
 
 // Detect picks a backend. mode is "auto", "kitty", or "none".
 func Detect(mode string) Terminal {

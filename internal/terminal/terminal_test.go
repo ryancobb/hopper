@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -20,10 +21,10 @@ func TestNoneBackend(t *testing.T) {
 	if n.Capabilities() != 0 || n.Name() != "no terminal" {
 		t.Fatal("none backend wrong")
 	}
-	if _, ok := n.Locate(123); ok {
+	if _, ok := n.Locate(context.Background(), 123); ok {
 		t.Fatal("none should not locate")
 	}
-	if err := n.Focus(nil); !errors.Is(err, ErrUnsupported) {
+	if err := n.Focus(context.Background(), nil); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("want ErrUnsupported, got %v", err)
 	}
 }

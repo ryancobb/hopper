@@ -1,30 +1,32 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"hopper/internal/repo"
-	"hopper/internal/session"
+	"hopper/internal/source"
+	"hopper/internal/status"
 	"hopper/internal/terminal"
 )
 
-type fakeLoader struct {
-	sessions []session.Session
+type fakeSource struct {
+	label    string
+	sessions []source.Session
 	err      error
 }
 
-func (f fakeLoader) Load() ([]session.Session, error) { return f.sessions, f.err }
+func (f fakeSource) Label() string { return f.label }
+func (f fakeSource) Sessions(context.Context) ([]source.Session, error) {
+	return f.sessions, f.err
+}
 
 type fakeRepos struct{ infos map[string]repo.Info }
 
-func (f fakeRepos) Resolve(cwd string) repo.Info { return f.infos[cwd] }
-
-type fakeNamer struct{ names map[string]string }
-
-func (f fakeNamer) Name(id string) string { return f.names[id] }
+func (f fakeRepos) Resolve(_ context.Context, cwd string) repo.Info { return f.infos[cwd] }
 
 type fakeTerm struct {
 	caps    terminal.Capability
@@ -35,25 +37,28 @@ type fakeTerm struct {
 
 func (f *fakeTerm) Name() string                      { return "fake" }
 func (f *fakeTerm) Capabilities() terminal.Capability { return f.caps }
-func (f *fakeTerm) Locate(pid int) (terminal.Handle, bool) {
+func (f *fakeTerm) Locate(_ context.Context, pid int) (terminal.Handle, bool) {
 	h, ok := f.located[pid]
 	return h, ok
 }
-func (f *fakeTerm) Focus(h terminal.Handle) error { f.focused = append(f.focused, h); return nil }
-func (f *fakeTerm) Preview(h terminal.Handle, n int) (string, error) {
+func (f *fakeTerm) Focus(_ context.Context, h terminal.Handle) error {
+	f.focused = append(f.focused, h)
+	return nil
+}
+func (f *fakeTerm) Preview(_ context.Context, h terminal.Handle, n int) (string, error) {
 	return f.preview, nil
 }
 
 func twoSessionModel() Model {
-	loader := fakeLoader{sessions: []session.Session{
-		{ID: "s1", PID: 1, CWD: "/a", Status: "busy", StatusUpdatedAt: time.Now()},
-		{ID: "s2", PID: 2, CWD: "/a", Status: "idle", StatusUpdatedAt: time.Now()},
+	now := time.Now()
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "s1", PID: 1, CWD: "/a", Name: "first", Kind: status.Working, RawStatus: "busy", UpdatedAt: now},
+		{ID: "s2", PID: 2, CWD: "/a", Name: "second", Kind: status.Idle, RawStatus: "idle", UpdatedAt: now},
 	}}
 	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa", Branch: "main"}}}
-	names := fakeNamer{names: map[string]string{"s1": "first", "s2": "second"}}
 	term := &fakeTerm{caps: terminal.CapFocus | terminal.CapPreview,
 		located: map[int]terminal.Handle{1: 11, 2: 22}}
-	return New(loader, repos, names, term)
+	return New(src, repos, term)
 }
 
 func applyLoad(m Model) Model {
@@ -104,7 +109,7 @@ func TestCollapseHidesSessions(t *testing.T) {
 
 func TestEnterFocusesSession(t *testing.T) {
 	m := applyLoad(twoSessionModel())
-	// move to first session row (index 1)
+	// s1 (busy→working) sorts first, so the first session row is PID 1 → handle 11.
 	m.cursor = 1
 	m.syncSel()
 	_, cmd := m.Update(key("enter"))
@@ -174,6 +179,25 @@ func TestFilterMode(t *testing.T) {
 	}
 }
 
+func TestFilterBackspace(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	next, _ := m.Update(key("/"))
+	m = next.(Model)
+	for _, r := range "secz" { // matches nothing
+		next, _ = m.Update(key(string(r)))
+		m = next.(Model)
+	}
+	if len(m.rows) != 0 {
+		t.Fatalf("filter 'secz' should match nothing, rows=%d", len(m.rows))
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = next.(Model)
+	// back to "sec" → matches "second" → repo + 1 session
+	if m.filter != "sec" || len(m.rows) != 2 {
+		t.Fatalf("after backspace filter=%q rows=%d", m.filter, len(m.rows))
+	}
+}
+
 func TestViewContents(t *testing.T) {
 	m := applyLoad(twoSessionModel())
 	out := m.View()
@@ -185,8 +209,7 @@ func TestViewContents(t *testing.T) {
 }
 
 func TestViewEmpty(t *testing.T) {
-	loader := fakeLoader{}
-	m := applyLoad(New(loader, fakeRepos{}, fakeNamer{}, &fakeTerm{}))
+	m := applyLoad(New(fakeSource{}, fakeRepos{}, &fakeTerm{}))
 	if !strings.Contains(m.View(), "no live sessions") {
 		t.Errorf("empty view: %s", m.View())
 	}
