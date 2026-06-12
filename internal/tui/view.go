@@ -46,8 +46,8 @@ func sessionLayout(w int) (nameW, nameStart int, showWord bool) {
 	return nameW, nameStart, false
 }
 
-// styles holds the structural lipgloss styles for the view. Status colors stay in
-// statusStyle so the status glyph/word and the repo badge share one mapping.
+// styles holds the structural lipgloss styles for the view. Status colors
+// live on displayClass so session rows and repo badges share one mapping.
 type styles struct {
 	header   lipgloss.Style
 	count    lipgloss.Style
@@ -301,11 +301,16 @@ func (m Model) renderRepoRow(r Row, selected bool, w int) string {
 	if label == "" {
 		label = "(no repo)"
 	}
-	breakdown := renderBreakdown(*r.Group)
+	counts := breakdownCounts(*r.Group)
+	breakdown := renderBreakdown(counts)
+	worst := classUnknown
+	if len(counts) > 0 {
+		worst = counts[0].class
+	}
 	bw := lipgloss.Width(breakdown)
 	nameMax := max(w-gutterW-2-colGap-bw, 1) // "▾ " takes 2 cells
 	name := st.repoName.Render(truncate(label, nameMax))
-	left := gutter(selected, r.Group.Kind) + caret + " " + name
+	left := gutter(selected, worst) + caret + " " + name
 	gap := max(w-lipgloss.Width(left)-bw, 1)
 	return left + strings.Repeat(" ", gap) + breakdown
 }
@@ -313,12 +318,13 @@ func (m Model) renderRepoRow(r Row, selected bool, w int) string {
 func (m Model) renderSessionRow(r Row, selected bool, w int) string {
 	it := r.Item
 	nameW, _, showWord := sessionLayout(w)
-	sty := statusStyle(it.Session.Kind)
+	cls := classify(it.Session.Kind, time.Since(it.Session.UpdatedAt))
+	sty := cls.style()
 
 	var b strings.Builder
-	b.WriteString(gutter(selected, it.Session.Kind))
+	b.WriteString(gutter(selected, cls))
 	b.WriteString(strings.Repeat(" ", sessionIndent))
-	b.WriteString(sty.Render(icon(it.Session.Kind)))
+	b.WriteString(sty.Render(cls.icon()))
 	if showWord {
 		b.WriteByte(' ')
 		b.WriteString(sty.Render(fmt.Sprintf("%-*s", statusWordW, truncate(statusText(it), statusWordW))))
@@ -342,48 +348,35 @@ func (m Model) renderReasonRow(it *Item, w int) string {
 	return strings.Repeat(" ", nameStart) + st.meta.Render(truncate("↳ "+it.Session.WaitingFor, w-nameStart))
 }
 
-type kindCount struct {
-	kind status.Kind
-	n    int
+type classCount struct {
+	class displayClass
+	n     int
 }
 
-// breakdownCounts tallies the statuses present in g, worst (highest rank)
-// first. Statuses with no sessions are omitted.
-func breakdownCounts(g Group) []kindCount {
-	counts := map[status.Kind]int{}
+// breakdownCounts tallies the display classes present in g, worst (highest)
+// first. Classes with no sessions are omitted.
+func breakdownCounts(g Group) []classCount {
+	counts := map[displayClass]int{}
 	for _, it := range g.Items {
-		counts[it.Session.Kind]++
+		counts[classify(it.Session.Kind, time.Since(it.Session.UpdatedAt))]++
 	}
-	out := make([]kindCount, 0, len(counts))
-	for k, n := range counts {
-		out = append(out, kindCount{k, n})
+	out := make([]classCount, 0, len(counts))
+	for c, n := range counts {
+		out = append(out, classCount{c, n})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].kind.Rank() > out[j].kind.Rank() })
+	sort.Slice(out, func(i, j int) bool { return out[i].class > out[j].class })
 	return out
 }
 
 // renderBreakdown renders a group's status counts, e.g.
-// "⚠ 1 blocked · ● 2 working", each segment in its status color.
-func renderBreakdown(g Group) string {
-	parts := make([]string, 0, 4)
-	for _, kc := range breakdownCounts(g) {
-		seg := fmt.Sprintf("%s %d %s", icon(kc.kind), kc.n, kc.kind.Label())
-		parts = append(parts, statusStyle(kc.kind).Render(seg))
+// "⚠ 1 blocked · ○ 2 recent", each segment in its class color.
+func renderBreakdown(counts []classCount) string {
+	parts := make([]string, 0, len(counts))
+	for _, cc := range counts {
+		seg := fmt.Sprintf("%s %d %s", cc.class.icon(), cc.n, cc.class.label())
+		parts = append(parts, cc.class.style().Render(seg))
 	}
 	return strings.Join(parts, st.meta.Render(" · "))
-}
-
-func statusStyle(k status.Kind) lipgloss.Style {
-	switch k {
-	case status.Working:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	case status.Blocked:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	case status.Idle:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	default:
-		return lipgloss.NewStyle()
-	}
 }
 
 // statusText shows the raw status verbatim for unknown kinds, so new provider
@@ -395,26 +388,13 @@ func statusText(it *Item) string {
 	return it.Session.Kind.Label()
 }
 
-func icon(k status.Kind) string {
-	switch k {
-	case status.Working:
-		return "●"
-	case status.Blocked:
-		return "⚠"
-	case status.Idle:
-		return "○"
-	default:
-		return "·"
-	}
-}
-
-// gutter renders the 2-cell selection column: a status-colored bar on the
+// gutter renders the 2-cell selection column: a class-colored bar on the
 // selected row, spaces otherwise.
-func gutter(selected bool, k status.Kind) string {
+func gutter(selected bool, c displayClass) string {
 	if !selected {
 		return "  "
 	}
-	return statusStyle(k).Render("▌") + " "
+	return c.style().Render("▌") + " "
 }
 
 func short(id string) string {

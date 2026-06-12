@@ -104,7 +104,7 @@ func TestRepoRowBreakdownRightAligned(t *testing.T) {
 	if got := lipgloss.Width(line); got != 60 {
 		t.Errorf("repo row width = %d, want 60: %q", got, line)
 	}
-	if !strings.HasSuffix(line, "● 1 working · ○ 1 idle") {
+	if !strings.HasSuffix(line, "● 1 working · ○ 1 recent") {
 		t.Errorf("breakdown not right-aligned, worst-first: %q", line)
 	}
 	if !strings.Contains(line, "▾ aaa") {
@@ -116,14 +116,16 @@ func TestRepoRowBreakdownRightAligned(t *testing.T) {
 }
 
 func TestBreakdownCounts(t *testing.T) {
+	now := time.Now()
 	g := Group{Items: []Item{
-		{Session: source.Session{Kind: status.Idle}},
-		{Session: source.Session{Kind: status.Blocked}},
-		{Session: source.Session{Kind: status.Working}},
-		{Session: source.Session{Kind: status.Working}},
+		{Session: source.Session{Kind: status.Idle, UpdatedAt: now.Add(-time.Hour)}},
+		{Session: source.Session{Kind: status.Idle, UpdatedAt: now.Add(-2 * time.Minute)}},
+		{Session: source.Session{Kind: status.Blocked, UpdatedAt: now}},
+		{Session: source.Session{Kind: status.Working, UpdatedAt: now}},
+		{Session: source.Session{Kind: status.Working, UpdatedAt: now}},
 	}}
 	got := breakdownCounts(g)
-	want := []kindCount{{status.Blocked, 1}, {status.Working, 2}, {status.Idle, 1}}
+	want := []classCount{{classBlocked, 1}, {classWorking, 2}, {classRecentIdle, 1}, {classIdle, 1}}
 	if len(got) != len(want) {
 		t.Fatalf("breakdownCounts = %v, want %v", got, want)
 	}
@@ -174,6 +176,49 @@ func TestSelectedRowBar(t *testing.T) {
 	}
 	if got := lipgloss.Width(selRepo); got != 60 {
 		t.Errorf("selected repo row width = %d, want 60: %q", got, selRepo)
+	}
+}
+
+func TestRecentIdleRowStyling(t *testing.T) {
+	// Force a color profile so styles emit ANSI; restore afterward.
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	now := time.Now()
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "s1", PID: 1, CWD: "/a", Name: "fresh", Kind: status.Idle, UpdatedAt: now.Add(-2 * time.Minute)},
+		{ID: "s2", PID: 2, CWD: "/a", Name: "stale", Kind: status.Idle, UpdatedAt: now.Add(-18 * time.Minute)},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa", Branch: "main"}}}
+	m := applyLoad(New(src, repos, &fakeTerm{}))
+
+	var fresh, stale Row
+	for _, r := range m.rows {
+		if r.Kind != RowSession {
+			continue
+		}
+		if r.Item.Session.Name == "fresh" {
+			fresh = r
+		} else {
+			stale = r
+		}
+	}
+
+	freshLine := m.renderSessionRow(fresh, false, 60)
+	if !strings.Contains(freshLine, classRecentIdle.style().Render("○")) {
+		t.Errorf("fresh idle row not in recent style: %q", freshLine)
+	}
+	staleLine := m.renderSessionRow(stale, false, 60)
+	if !strings.Contains(staleLine, classIdle.style().Render("○")) {
+		t.Errorf("stale idle row not in idle style: %q", staleLine)
+	}
+	if strings.Contains(staleLine, classRecentIdle.style().Render("○")) {
+		t.Errorf("stale idle row styled as recent: %q", staleLine)
+	}
+	// The status word still reads "idle" on both rows; only color differs.
+	if !strings.Contains(freshLine, "idle") || !strings.Contains(staleLine, "idle") {
+		t.Errorf("status word should stay \"idle\":\n%q\n%q", freshLine, staleLine)
 	}
 }
 
