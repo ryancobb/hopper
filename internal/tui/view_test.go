@@ -92,14 +92,45 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestWorstKindCount(t *testing.T) {
-	g := Group{Kind: status.Working, Items: []Item{
-		{Session: source.Session{Kind: status.Working}},
+func TestRepoRowBreakdownRightAligned(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	var r Row
+	for _, rr := range m.rows {
+		if rr.Kind == RowRepo {
+			r = rr
+		}
+	}
+	line := m.renderRepoRow(r, false, 60)
+	if got := lipgloss.Width(line); got != 60 {
+		t.Errorf("repo row width = %d, want 60: %q", got, line)
+	}
+	if !strings.HasSuffix(line, "● 1 working · ○ 1 idle") {
+		t.Errorf("breakdown not right-aligned, worst-first: %q", line)
+	}
+	if !strings.Contains(line, "▾ aaa") {
+		t.Errorf("missing caret+name: %q", line)
+	}
+	if strings.Contains(line, "main") {
+		t.Errorf("branch should be removed: %q", line)
+	}
+}
+
+func TestBreakdownCounts(t *testing.T) {
+	g := Group{Items: []Item{
 		{Session: source.Session{Kind: status.Idle}},
+		{Session: source.Session{Kind: status.Blocked}},
+		{Session: source.Session{Kind: status.Working}},
 		{Session: source.Session{Kind: status.Working}},
 	}}
-	if got := worstKindCount(g); got != 2 {
-		t.Fatalf("worstKindCount=%d want 2", got)
+	got := breakdownCounts(g)
+	want := []kindCount{{status.Blocked, 1}, {status.Working, 2}, {status.Idle, 1}}
+	if len(got) != len(want) {
+		t.Fatalf("breakdownCounts = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("breakdownCounts = %v, want %v", got, want)
+		}
 	}
 }
 
@@ -128,6 +159,18 @@ func TestSelectedRowBar(t *testing.T) {
 	unsel := m.renderSessionRow(sessionRow, false, 60)
 	if strings.Contains(unsel, "▌") {
 		t.Errorf("unselected row has ▌ bar: %q", unsel)
+	}
+
+	var repoRow Row
+	for _, r := range m.rows {
+		if r.Kind == RowRepo {
+			repoRow = r
+			break
+		}
+	}
+	selRepo := m.renderRepoRow(repoRow, true, 60)
+	if !strings.Contains(selRepo, "▌") {
+		t.Errorf("selected repo row missing ▌ bar: %q", selRepo)
 	}
 }
 

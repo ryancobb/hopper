@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,18 +13,6 @@ import (
 const footer = "j/k move · h/l fold · Enter focus · p preview · / filter · r refresh · q quit"
 
 const defaultWidth = 80
-
-const (
-	repoNameCol   = 20
-	repoBranchCol = 20
-	// statusCol is the column where the status badge/word begins on both repo and
-	// session rows, so the two line up. It follows from the repo row layout:
-	//   "  " + caret + " " + name + " " + branch + "  " + status
-	statusCol = 2 + 1 + 1 + repoNameCol + 1 + repoBranchCol + 2
-	// sessionNameCol sizes the session name so its status lands at statusCol:
-	//   "      " + name + "  " + status
-	sessionNameCol = statusCol - (6 + 2)
-)
 
 // Status-rail geometry. A session row is:
 //
@@ -102,17 +91,6 @@ func truncate(s string, max int) string {
 	return string(r[:max-1]) + "…"
 }
 
-// worstKindCount counts the sessions in g whose status equals the group's aggregate.
-func worstKindCount(g Group) int {
-	n := 0
-	for _, it := range g.Items {
-		if it.Session.Kind == g.Kind {
-			n++
-		}
-	}
-	return n
-}
-
 // View renders the model.
 func (m Model) View() string {
 	if m.quitting {
@@ -189,7 +167,7 @@ func (m Model) selectedItem() *Item {
 func (m Model) renderRow(i int, r Row, w int) string {
 	selected := i == m.cursor
 	if r.Kind == RowRepo {
-		return m.renderRepoRow(r, selected)
+		return m.renderRepoRow(r, selected, w)
 	}
 	return m.renderSessionRow(r, selected, w)
 }
@@ -205,7 +183,7 @@ func (m Model) renderHeader(w int) string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
-func (m Model) renderRepoRow(r Row, selected bool) string {
+func (m Model) renderRepoRow(r Row, selected bool, w int) string {
 	caret := "▾"
 	if m.collapsed[r.Group.Key] {
 		caret = "▸"
@@ -214,15 +192,13 @@ func (m Model) renderRepoRow(r Row, selected bool) string {
 	if label == "" {
 		label = "(no repo)"
 	}
-	branch := ""
-	if len(r.Group.Items) > 0 {
-		branch = r.Group.Items[0].Repo.Branch
-	}
-	name := st.repoName.Render(fmt.Sprintf("%-*s", repoNameCol, truncate(label, repoNameCol)))
-	branchCol := st.meta.Render(fmt.Sprintf("%-*s", repoBranchCol, truncate(branch, repoBranchCol)))
-	badge := statusStyle(r.Group.Kind).Render(fmt.Sprintf("%s %d %s",
-		icon(r.Group.Kind), worstKindCount(*r.Group), r.Group.Kind.Label()))
-	return gutter(selected, r.Group.Kind) + fmt.Sprintf("%s %s %s  %s", caret, name, branchCol, badge)
+	breakdown := renderBreakdown(*r.Group)
+	bw := lipgloss.Width(breakdown)
+	nameMax := max(w-gutterW-2-colGap-bw, 1) // "▾ " takes 2 cells
+	name := st.repoName.Render(truncate(label, nameMax))
+	left := gutter(selected, r.Group.Kind) + caret + " " + name
+	gap := max(w-lipgloss.Width(left)-bw, 1)
+	return left + strings.Repeat(" ", gap) + breakdown
 }
 
 func (m Model) renderSessionRow(r Row, selected bool, w int) string {
@@ -255,6 +231,37 @@ func (m Model) renderSessionRow(r Row, selected bool, w int) string {
 func (m Model) renderReasonRow(it *Item, w int) string {
 	_, nameStart, _ := sessionLayout(w)
 	return strings.Repeat(" ", nameStart) + st.meta.Render(truncate("↳ "+it.Session.WaitingFor, w-nameStart))
+}
+
+type kindCount struct {
+	kind status.Kind
+	n    int
+}
+
+// breakdownCounts tallies the statuses present in g, worst (highest rank)
+// first. Statuses with no sessions are omitted.
+func breakdownCounts(g Group) []kindCount {
+	counts := map[status.Kind]int{}
+	for _, it := range g.Items {
+		counts[it.Session.Kind]++
+	}
+	out := make([]kindCount, 0, len(counts))
+	for k, n := range counts {
+		out = append(out, kindCount{k, n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].kind.Rank() > out[j].kind.Rank() })
+	return out
+}
+
+// renderBreakdown renders a group's status counts, e.g.
+// "⚠ 1 blocked · ● 2 working", each segment in its status color.
+func renderBreakdown(g Group) string {
+	parts := make([]string, 0, 4)
+	for _, kc := range breakdownCounts(g) {
+		seg := fmt.Sprintf("%s %d %s", icon(kc.kind), kc.n, kc.kind.Label())
+		parts = append(parts, statusStyle(kc.kind).Render(seg))
+	}
+	return strings.Join(parts, st.meta.Render(" · "))
 }
 
 func statusStyle(k status.Kind) lipgloss.Style {
