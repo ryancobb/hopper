@@ -32,7 +32,7 @@ type styles struct {
 	count    lipgloss.Style
 	repoName lipgloss.Style
 	meta     lipgloss.Style
-	selected lipgloss.Style
+	bold     lipgloss.Style
 	footer   lipgloss.Style
 }
 
@@ -43,7 +43,7 @@ func newStyles() styles {
 		count:    dim,
 		repoName: lipgloss.NewStyle().Bold(true),
 		meta:     dim,
-		selected: lipgloss.NewStyle().Background(lipgloss.Color("8")).Foreground(lipgloss.Color("15")),
+		bold:     lipgloss.NewStyle().Bold(true),
 		footer:   dim,
 	}
 }
@@ -154,16 +154,10 @@ func (m Model) selectedItem() *Item {
 
 func (m Model) renderRow(i int, r Row, w int) string {
 	selected := i == m.cursor
-	var content string
 	if r.Kind == RowRepo {
-		content = m.renderRepoRow(r, selected)
-	} else {
-		content = m.renderSessionRow(r, selected)
+		return m.renderRepoRow(r, selected)
 	}
-	if selected {
-		return st.selected.Width(w).Render(content)
-	}
-	return content
+	return m.renderSessionRow(r, selected)
 }
 
 func (m Model) renderHeader(w int) string {
@@ -190,39 +184,27 @@ func (m Model) renderRepoRow(r Row, selected bool) string {
 	if len(r.Group.Items) > 0 {
 		branch = r.Group.Items[0].Repo.Branch
 	}
-	name := fmt.Sprintf("%-*s", repoNameCol, truncate(label, repoNameCol))
-	branchCol := fmt.Sprintf("%-*s", repoBranchCol, truncate(branch, repoBranchCol))
-	badge := fmt.Sprintf("%s %d %s",
-		icon(r.Group.Kind), worstKindCount(*r.Group), r.Group.Kind.Label())
-	// The selected row gets a full-width background highlight; styling its segments
-	// would emit ANSI resets that break the background mid-line, so leave it plain.
-	if !selected {
-		name = st.repoName.Render(name)
-		branchCol = st.meta.Render(branchCol)
-		badge = statusStyle(r.Group.Kind).Render(badge)
-	}
-	return fmt.Sprintf("  %s %s %s  %s", caret, name, branchCol, badge)
+	name := st.repoName.Render(fmt.Sprintf("%-*s", repoNameCol, truncate(label, repoNameCol)))
+	branchCol := st.meta.Render(fmt.Sprintf("%-*s", repoBranchCol, truncate(branch, repoBranchCol)))
+	badge := statusStyle(r.Group.Kind).Render(fmt.Sprintf("%s %d %s",
+		icon(r.Group.Kind), worstKindCount(*r.Group), r.Group.Kind.Label()))
+	return gutter(selected, r.Group.Kind) + fmt.Sprintf("%s %s %s  %s", caret, name, branchCol, badge)
 }
 
 func (m Model) renderSessionRow(r Row, selected bool) string {
 	it := r.Item
 	name := fmt.Sprintf("%-*s", sessionNameCol, truncate(it.Session.Name, sessionNameCol))
-	statusField := fmt.Sprintf("%s %-8s", icon(it.Session.Kind), statusText(it))
-	age := shortAge(time.Since(it.Session.UpdatedAt))
+	if selected {
+		name = st.bold.Render(name)
+	}
+	statusField := statusStyle(it.Session.Kind).Render(
+		fmt.Sprintf("%s %-8s", icon(it.Session.Kind), statusText(it)))
+	age := st.meta.Render(shortAge(time.Since(it.Session.UpdatedAt)))
 	reason := ""
 	if it.Session.Kind == status.Blocked && it.Session.WaitingFor != "" {
-		reason = " · " + it.Session.WaitingFor
+		reason = st.meta.Render(" · " + it.Session.WaitingFor)
 	}
-	// Leave the selected row plain so its full-width highlight is not broken by
-	// inner ANSI resets (see renderRepoRow).
-	if !selected {
-		statusField = statusStyle(it.Session.Kind).Render(statusField)
-		age = st.meta.Render(age)
-		if reason != "" {
-			reason = st.meta.Render(reason)
-		}
-	}
-	return fmt.Sprintf("      %s  %s  %s%s", name, statusField, age, reason)
+	return gutter(selected, it.Session.Kind) + fmt.Sprintf("    %s  %s  %s%s", name, statusField, age, reason)
 }
 
 func statusStyle(k status.Kind) lipgloss.Style {
@@ -258,6 +240,15 @@ func icon(k status.Kind) string {
 	default:
 		return "·"
 	}
+}
+
+// gutter renders the 2-cell selection column: a status-colored bar on the
+// selected row, spaces otherwise.
+func gutter(selected bool, k status.Kind) string {
+	if !selected {
+		return "  "
+	}
+	return statusStyle(k).Render("▌") + " "
 }
 
 func short(id string) string {

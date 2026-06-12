@@ -77,34 +77,30 @@ func TestWorstKindCount(t *testing.T) {
 	}
 }
 
-func TestSelectedRowContentIsPlain(t *testing.T) {
-	// Force a color profile so styled (unselected) rows actually emit ANSI; restore
-	// it afterward so other tests are unaffected.
+func TestSelectedRowBar(t *testing.T) {
+	// Force a color profile so styles emit ANSI; restore afterward.
 	old := lipgloss.ColorProfile()
 	defer lipgloss.SetColorProfile(old)
 	lipgloss.SetColorProfile(termenv.ANSI256)
 
 	m := applyLoad(twoSessionModel())
-	var sessionRow, repoRow Row
+	var sessionRow Row
 	for _, r := range m.rows {
-		switch r.Kind {
-		case RowSession:
+		if r.Kind == RowSession {
 			sessionRow = r
-		case RowRepo:
-			repoRow = r
+			break
 		}
 	}
 
-	// A selected row's content must be ANSI-free so the full-width background
-	// highlight is continuous (inner color resets would break it mid-line).
-	if got := m.renderSessionRow(sessionRow, true); strings.ContainsRune(got, '\x1b') {
-		t.Errorf("selected session row should be plain, got ANSI: %q", got)
+	sel := m.renderSessionRow(sessionRow, true)
+	if !strings.Contains(sel, "▌") {
+		t.Errorf("selected row missing ▌ bar: %q", sel)
 	}
-	if got := m.renderRepoRow(repoRow, true); strings.ContainsRune(got, '\x1b') {
-		t.Errorf("selected repo row should be plain, got ANSI: %q", got)
+	if !strings.ContainsRune(sel, '\x1b') {
+		t.Errorf("selected row should keep ANSI styling: %q", sel)
 	}
-	// Unselected rows should still be styled under a color profile.
-	if got := m.renderSessionRow(sessionRow, false); !strings.ContainsRune(got, '\x1b') {
-		t.Errorf("unselected session row should be styled, got plain: %q", got)
+	unsel := m.renderSessionRow(sessionRow, false)
+	if strings.Contains(unsel, "▌") {
+		t.Errorf("unselected row has ▌ bar: %q", unsel)
 	}
 }
