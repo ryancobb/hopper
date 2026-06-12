@@ -23,7 +23,7 @@ func item(id, root, name, branch string, kind status.Kind, ago time.Duration) It
 	}
 }
 
-func TestBuildGroupsSortsAndAggregates(t *testing.T) {
+func TestBuildGroupsSorts(t *testing.T) {
 	items := []Item{
 		item("s1", "/b", "bbb", "main", status.Idle, time.Minute),
 		item("s2", "/a", "aaa", "main", status.Idle, 2*time.Minute),
