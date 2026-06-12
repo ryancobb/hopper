@@ -153,3 +153,78 @@ func TestInfoNoTranscript(t *testing.T) {
 		t.Fatalf("want zero Info, got %+v", got)
 	}
 }
+
+func TestInfoCachesUnchangedFile(t *testing.T) {
+	body := `{"type":"ai-title","aiTitle":"stable title"}`
+	r, opens := newTestReader(&body)
+	a := r.Info("sid")
+	b := r.Info("sid")
+	if *opens != 1 {
+		t.Fatalf("opens = %d, want 1 (unchanged file must not be re-read)", *opens)
+	}
+	if a != b {
+		t.Fatalf("cached Info differs: %+v vs %+v", a, b)
+	}
+}
+
+func TestInfoRereadsOnGrowth(t *testing.T) {
+	body := `{"type":"ai-title","aiTitle":"old title"}`
+	r, opens := newTestReader(&body)
+	if got := r.Info("sid"); got.Title != "old title" {
+		t.Fatalf("Title = %q, want %q", got.Title, "old title")
+	}
+	body += "\n" + `{"type":"ai-title","aiTitle":"new title"}`
+	if got := r.Info("sid"); got.Title != "new title" {
+		t.Fatalf("Title = %q, want %q (title must refresh on growth)", got.Title, "new title")
+	}
+	if *opens != 2 {
+		t.Fatalf("opens = %d, want 2", *opens)
+	}
+}
+
+func TestInfoEmptyTranscriptRetried(t *testing.T) {
+	body := ""
+	r, _ := newTestReader(&body)
+	if got := r.Info("sid"); got != (Info{}) {
+		t.Fatalf("want zero Info, got %+v", got)
+	}
+	body = `{"type":"user","message":{"content":"hi there friend"}}`
+	if got := r.Info("sid"); got.FirstPrompt != "hi there friend" {
+		t.Fatalf("FirstPrompt = %q, want %q", got.FirstPrompt, "hi there friend")
+	}
+}
+
+// TestInfoTailReadAndSeed drives the bounded-tail path: the first read's tail
+// window starts mid-line (the partial line must be discarded) and contains no
+// ai-title, forcing one full scan to seed the title. After seeding, growth
+// costs a single tail read, which picks up a newly appended title.
+func TestInfoTailReadAndSeed(t *testing.T) {
+	pad := strings.Repeat("x", 300)
+	body := strings.Join([]string{
+		`{"type":"ai-title","aiTitle":"early title"}`,
+		`{"type":"user","message":{"content":"the prompt"}}`,
+		`{"type":"system","content":"` + pad + `"}`,
+	}, "\n")
+	r, opens := newTestReader(&body)
+	r.tailBytes = 100
+
+	got := r.Info("sid")
+	if got.Title != "early title" || got.FirstPrompt != "the prompt" {
+		t.Fatalf("got %+v", got)
+	}
+	if *opens != 2 { // one tail read + one full scan to seed the title
+		t.Fatalf("opens = %d, want 2", *opens)
+	}
+
+	body += "\n" + `{"type":"ai-title","aiTitle":"newer title"}`
+	got = r.Info("sid")
+	if got.Title != "newer title" {
+		t.Fatalf("Title = %q, want %q", got.Title, "newer title")
+	}
+	if got.FirstPrompt != "the prompt" { // cached from the seeding full scan
+		t.Fatalf("FirstPrompt = %q, want %q", got.FirstPrompt, "the prompt")
+	}
+	if *opens != 3 { // already seeded: growth costs one tail read
+		t.Fatalf("opens = %d, want 3", *opens)
+	}
+}

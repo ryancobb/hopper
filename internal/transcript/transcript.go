@@ -142,7 +142,8 @@ const (
 	nameMax          = 40
 )
 
-// Reader derives Infos from transcript JSONL files.
+// Reader derives Infos from transcripts, re-reading a file only when it grows
+// and reading only a bounded tail once the session's title is known.
 type Reader struct {
 	projectsDir string
 	tailBytes   int64
@@ -151,7 +152,18 @@ type Reader struct {
 	open func(path string) (io.ReadSeekCloser, error)
 	size func(path string) (int64, error)
 
-	mu sync.Mutex
+	mu    sync.Mutex
+	cache map[string]*state
+}
+
+// state is a session's cached read position and derived display data.
+type state struct {
+	path   string
+	read   bool // at least one scan happened; size is meaningful
+	seeded bool // title/first prompt resolved: full scan done or a title seen
+	size   int64
+
+	title, firstPrompt string
 }
 
 // NewReader builds a Reader over ~/.claude/projects.
@@ -168,25 +180,62 @@ func NewReader(projectsDir string) *Reader {
 			}
 			return fi.Size(), nil
 		},
+		cache: map[string]*state{},
 	}
 }
 
-// Info returns the session's display data.
+// Info returns the session's display data, re-reading the transcript only when
+// it has grown since the last call.
 func (r *Reader) Info(sessionID string) Info {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	matches, err := r.glob(filepath.Join(r.projectsDir, "*", sessionID+".jsonl"))
-	if err != nil || len(matches) == 0 {
-		return Info{}
+	st := r.cache[sessionID]
+	if st == nil {
+		st = &state{}
+		r.cache[sessionID] = st
 	}
-	res, ok := r.scanFrom(matches[0], 0)
+	if st.path == "" {
+		matches, err := r.glob(filepath.Join(r.projectsDir, "*", sessionID+".jsonl"))
+		if err != nil || len(matches) == 0 {
+			return Info{}
+		}
+		st.path = matches[0]
+	}
+	sz, err := r.size(st.path)
+	if err != nil || (st.read && sz == st.size) {
+		return st.info()
+	}
+
+	var offset int64
+	if sz > r.tailBytes {
+		offset = sz - r.tailBytes
+	}
+	res, ok := r.scanFrom(st.path, offset)
 	if !ok {
-		return Info{}
+		return st.info()
 	}
+	st.read, st.size = true, sz
+	if res.title != "" {
+		st.title, st.seeded = res.title, true
+	}
+	if offset == 0 {
+		// The whole file was scanned; the first prompt is authoritative.
+		st.firstPrompt, st.seeded = res.firstPrompt, true
+	} else if !st.seeded {
+		// Long transcript first seen mid-stream with no title in its tail:
+		// one full scan resolves the title / first-prompt fallback.
+		if full, ok := r.scanFrom(st.path, 0); ok {
+			st.title, st.firstPrompt, st.seeded = full.title, full.firstPrompt, true
+		}
+	}
+	return st.info()
+}
+
+func (s *state) info() Info {
 	return Info{
-		Title:       truncate(res.title, nameMax),
-		FirstPrompt: truncate(res.firstPrompt, nameMax),
+		Title:       truncate(s.title, nameMax),
+		FirstPrompt: truncate(s.firstPrompt, nameMax),
 	}
 }
 
@@ -228,7 +277,7 @@ func (r *Reader) scanFrom(path string, offset int64) (result, bool) {
 	for sc.Scan() {
 		processLine(sc.Bytes(), &res)
 	}
-	return res, true
+	return res, sc.Err() == nil
 }
 
 // processLine folds one JSONL line into res: ai-titles last-win, the first
