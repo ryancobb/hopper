@@ -67,7 +67,21 @@ func TestKittyPreviewTail(t *testing.T) {
 		t.Fatalf("preview tail: %q", out)
 	}
 	got := strings.Join(calls[0], " ")
-	if got != "get-text --match id:4 --extent screen" {
+	if got != "get-text --match id:4 --extent screen --ansi" {
 		t.Fatalf("preview args: %q", got)
+	}
+}
+
+func TestKittyPreviewKeepsColor(t *testing.T) {
+	// A colored line, a line that is only escape codes (visually blank), and a
+	// plain line. The blank one must be dropped; the colors must survive.
+	text := "\x1b[32mgreen\x1b[m\n\x1b[m   \nplain\n"
+	k := fakeKitty(text, nil)
+	out, err := k.Preview(context.Background(), 4, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "\x1b[32mgreen\x1b[m\nplain" {
+		t.Fatalf("preview with color: %q", out)
 	}
 }

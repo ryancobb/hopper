@@ -27,6 +27,9 @@ type Terminal interface {
 	Capabilities() Capability
 	Locate(ctx context.Context, pid int) (Handle, bool)
 	Focus(ctx context.Context, h Handle) error
+	// Preview returns the last `lines` non-empty rows of the pane's screen.
+	// The text is raw terminal output and may carry ANSI styling, including
+	// colors left open across lines; callers must not assume plain text.
 	Preview(ctx context.Context, h Handle, lines int) (string, error)
 }
 

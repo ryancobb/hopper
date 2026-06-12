@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Kitty controls kitty via `kitty @`.
@@ -70,13 +72,14 @@ func (k *Kitty) Focus(ctx context.Context, h Handle) error {
 	return err
 }
 
-// Preview returns the last `lines` non-empty screen lines of the window.
+// Preview returns the last `lines` non-empty screen lines of the window,
+// keeping the pane's ANSI colors.
 func (k *Kitty) Preview(ctx context.Context, h Handle, lines int) (string, error) {
 	id, ok := h.(int)
 	if !ok {
 		return "", ErrBadHandle
 	}
-	out, err := k.run(ctx, "get-text", "--match", fmt.Sprintf("id:%d", id), "--extent", "screen")
+	out, err := k.run(ctx, "get-text", "--match", fmt.Sprintf("id:%d", id), "--extent", "screen", "--ansi")
 	if err != nil {
 		return "", err
 	}
@@ -86,7 +89,7 @@ func (k *Kitty) Preview(ctx context.Context, h Handle, lines int) (string, error
 func lastNonEmptyLines(s string, n int) string {
 	var kept []string
 	for _, ln := range strings.Split(s, "\n") {
-		if strings.TrimSpace(ln) != "" {
+		if strings.TrimSpace(ansi.Strip(ln)) != "" {
 			kept = append(kept, ln)
 		}
 	}
