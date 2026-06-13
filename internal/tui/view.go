@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -19,10 +18,11 @@ const defaultWidth = 80
 
 // Status-rail geometry. A session row is icon-only: the glyph's shape and
 // color carry the status, so no status word is shown and the name gets the
-// freed space. The gutter is a single cell so the repo (base) level sits
-// nearly flush with the left edge.
+// freed space. The leftmost cell is the accent column — it holds the status
+// stripe (or the selection highlight) — and is a single cell so the repo
+// (base) level sits nearly flush with the left edge.
 //
-//	gutter(1) indent(1) glyph(1) gap(1) name(flex) gap(1) age(4)
+//	accent(1) indent(1) glyph(1) gap(1) name(flex) gap(1) age(4)
 const (
 	gutterW       = 1
 	sessionIndent = 1 // session rows sit one cell deeper than repo headers
@@ -63,9 +63,7 @@ func sessionLayout(w int) (nameW, nameStart int) {
 type styles struct {
 	header   lipgloss.Style
 	count    lipgloss.Style
-	repoName lipgloss.Style
 	meta     lipgloss.Style
-	bold     lipgloss.Style
 	footer   lipgloss.Style
 }
 
@@ -74,9 +72,7 @@ func newStyles() styles {
 	return styles{
 		header:   lipgloss.NewStyle().Bold(true),
 		count:    dim,
-		repoName: lipgloss.NewStyle().Bold(true),
 		meta:     dim,
-		bold:     lipgloss.NewStyle().Bold(true),
 		footer:   dim,
 	}
 }
@@ -497,15 +493,21 @@ func (m Model) renderRepoRow(r Row, selected bool, w int) string {
 	if label == "" {
 		label = "(no repo)"
 	}
-	// The selection bar still takes the repo's worst session class as its color.
-	counts := breakdownCounts(*r.Group)
-	worst := classUnknown
-	if len(counts) > 0 {
-		worst = counts[0].class
+
+	base := lipgloss.NewStyle()
+	if selected {
+		base = base.Background(selectHighlight)
 	}
-	nameMax := max(w-gutterW-2, 1) // "▾ " takes 2 cells
-	name := st.repoName.Render(truncate(label, nameMax))
-	return gutter(selected, worst) + caret + " " + name
+	// A red stripe marks a repo whose group holds a blocked session, visible even
+	// when collapsed; it stays (over the highlight) on the cursor row too.
+	gutterCell := base.Render(" ")
+	if groupHasBlocked(*r.Group) {
+		gutterCell = accentBar(base, classBlocked.style().GetForeground())
+	}
+
+	nameMax := max(w-gutterW-2, 1) // gutter cell + "▾ " (caret + space)
+	label = fmt.Sprintf("%-*s", nameMax, truncate(label, nameMax))
+	return gutterCell + base.Render(caret+" ") + base.Bold(true).Render(label)
 }
 
 // spinnerFrames is the braille spinner used for the working glyph — the same
@@ -521,62 +523,84 @@ func (m Model) sessionGlyph(c displayClass) string {
 	return c.icon()
 }
 
+// accentBar is the 1-cell left status stripe: a half-block in color c, painted
+// over base so it keeps the selection-highlight background behind it on the
+// cursor row instead of leaving a default-bg hole in the highlighted row.
+func accentBar(base lipgloss.Style, c lipgloss.TerminalColor) string {
+	return base.Foreground(c).Render("▌")
+}
+
 func (m Model) renderSessionRow(r Row, selected bool, w int) string {
 	it := r.Item
 	nameW, _ := sessionLayout(w)
 	cls := classify(it.Session.Kind, time.Since(it.Session.UpdatedAt))
-	sty := cls.style()
+
+	hasStripe, dim := cls.accent()
+	if selected {
+		dim = false // the cursor row lights up rather than fading
+	}
+
+	// The selection highlight is the only full-row background; on the cursor row
+	// it spans every cell. Otherwise status lives in the left accent stripe plus
+	// the glyph color, leaving the row body on the normal background.
+	base := lipgloss.NewStyle()
+	if selected {
+		base = base.Background(selectHighlight)
+	}
+
+	// Gutter cell: the status stripe, or a blank. The stripe is painted over base,
+	// so on the cursor row it stays visible with the selection highlight behind it.
+	gutterCell := base.Render(" ")
+	if hasStripe {
+		gutterCell = accentBar(base, cls.style().GetForeground())
+	}
+
+	glyphFg := cls.style().GetForeground()
+	nameStyle := base
+	if dim {
+		glyphFg = dimColor
+		nameStyle = base.Foreground(dimColor)
+	}
+	if selected || cls == classBlocked {
+		nameStyle = nameStyle.Bold(true)
+	}
+
+	name := fmt.Sprintf("%-*s", nameW, truncate(it.Session.Name, nameW))
+	age := fmt.Sprintf("%*s", ageW, shortAge(time.Since(it.Session.UpdatedAt)))
 
 	var b strings.Builder
-	b.WriteString(gutter(selected, cls))
-	b.WriteString(strings.Repeat(" ", sessionIndent))
-	b.WriteString(sty.Render(m.sessionGlyph(cls)))
-	b.WriteString(strings.Repeat(" ", colGap))
-	name := fmt.Sprintf("%-*s", nameW, truncate(it.Session.Name, nameW))
-	if selected {
-		name = st.bold.Render(name)
-	}
-	b.WriteString(name)
-	b.WriteString(strings.Repeat(" ", colGap))
-	b.WriteString(st.meta.Render(fmt.Sprintf("%*s", ageW, shortAge(time.Since(it.Session.UpdatedAt)))))
+	b.WriteString(gutterCell)
+	b.WriteString(base.Render(strings.Repeat(" ", sessionIndent)))
+	b.WriteString(base.Foreground(glyphFg).Render(m.sessionGlyph(cls)))
+	b.WriteString(base.Render(strings.Repeat(" ", colGap)))
+	b.WriteString(nameStyle.Render(name))
+	b.WriteString(base.Render(strings.Repeat(" ", colGap)))
+	b.WriteString(base.Foreground(dimColor).Render(age))
 	return b.String()
 }
 
-// renderReasonRow is the dimmed continuation line carrying a blocked session's
-// reason, indented to the name column. It is display-only: it is not a Row, so
-// the cursor never lands on it.
+// renderReasonRow is the continuation line carrying a blocked session's reason,
+// indented to the name column. It is display-only: it is not a Row, so the
+// cursor never lands on it.
 func (m Model) renderReasonRow(it *Item, w int) string {
 	_, nameStart := sessionLayout(w)
-	return strings.Repeat(" ", nameStart) + st.meta.Render(truncate("↳ "+it.Session.WaitingFor, w-nameStart))
+	// A red stripe ties the reason line to the blocked row above it; the text
+	// stays dim. The stripe occupies the gutter cell, so the reason still aligns
+	// under the session-name column.
+	indent := strings.Repeat(" ", nameStart-1)
+	text := st.meta.Render(truncate("↳ "+it.Session.WaitingFor, w-nameStart))
+	return accentBar(lipgloss.NewStyle(), classBlocked.style().GetForeground()) + indent + text
 }
 
-type classCount struct {
-	class displayClass
-	n     int
-}
-
-// breakdownCounts tallies the display classes present in g, worst (highest)
-// first. Classes with no sessions are omitted.
-func breakdownCounts(g Group) []classCount {
-	counts := map[displayClass]int{}
+// groupHasBlocked reports whether any session in g is blocked, marking the
+// repo header with the red accent stripe even when the group is collapsed.
+func groupHasBlocked(g Group) bool {
 	for _, it := range g.Items {
-		counts[classify(it.Session.Kind, time.Since(it.Session.UpdatedAt))]++
+		if it.Session.Kind == status.Blocked {
+			return true
+		}
 	}
-	out := make([]classCount, 0, len(counts))
-	for c, n := range counts {
-		out = append(out, classCount{c, n})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].class > out[j].class })
-	return out
-}
-
-// gutter renders the 1-cell selection column: a class-colored bar on the
-// selected row, a space otherwise.
-func gutter(selected bool, c displayClass) string {
-	if !selected {
-		return " "
-	}
-	return c.style().Render("▌")
+	return false
 }
 
 func short(id string) string {

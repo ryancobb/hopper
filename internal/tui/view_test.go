@@ -116,29 +116,7 @@ func TestRepoRowNoBreakdown(t *testing.T) {
 	}
 }
 
-func TestBreakdownCounts(t *testing.T) {
-	now := time.Now()
-	g := Group{Items: []Item{
-		{Session: source.Session{Kind: status.Idle, UpdatedAt: now.Add(-time.Hour)}},
-		{Session: source.Session{Kind: status.Idle, UpdatedAt: now.Add(-2 * time.Minute)}},
-		{Session: source.Session{Kind: status.Blocked, UpdatedAt: now}},
-		{Session: source.Session{Kind: status.Working, UpdatedAt: now}},
-		{Session: source.Session{Kind: status.Working, UpdatedAt: now}},
-	}}
-	got := breakdownCounts(g)
-	want := []classCount{{classBlocked, 1}, {classWorking, 2}, {classRecentIdle, 1}, {classIdle, 1}}
-	if len(got) != len(want) {
-		t.Fatalf("breakdownCounts = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("breakdownCounts = %v, want %v", got, want)
-		}
-	}
-}
-
-func TestSelectedRowBar(t *testing.T) {
-	// Force a color profile so styles emit ANSI; restore afterward.
+func TestSelectionHighlight(t *testing.T) {
 	old := lipgloss.ColorProfile()
 	defer lipgloss.SetColorProfile(old)
 	lipgloss.SetColorProfile(termenv.ANSI256)
@@ -151,29 +129,13 @@ func TestSelectedRowBar(t *testing.T) {
 			break
 		}
 	}
-
 	sel := m.renderSessionRow(sessionRow, true, 60)
-	if !strings.Contains(sel, "▌") {
-		t.Errorf("selected row missing ▌ bar: %q", sel)
-	}
-	if !strings.ContainsRune(sel, '\x1b') {
-		t.Errorf("selected row should keep ANSI styling: %q", sel)
+	if !strings.Contains(sel, "48;5;238") {
+		t.Errorf("selected row missing the highlight background: %q", sel)
 	}
 	unsel := m.renderSessionRow(sessionRow, false, 60)
-	if strings.Contains(unsel, "▌") {
-		t.Errorf("unselected row has ▌ bar: %q", unsel)
-	}
-
-	var repoRow Row
-	for _, r := range m.rows {
-		if r.Kind == RowRepo {
-			repoRow = r
-			break
-		}
-	}
-	selRepo := m.renderRepoRow(repoRow, true, 60)
-	if !strings.Contains(selRepo, "▌") {
-		t.Errorf("selected repo row missing ▌ bar: %q", selRepo)
+	if strings.Contains(unsel, "48;5;238") {
+		t.Errorf("unselected row should not have the selection highlight: %q", unsel)
 	}
 }
 
@@ -475,5 +437,223 @@ func TestBlockedReasonContinuationLine(t *testing.T) {
 	}
 	if got := strings.Count(out, "↳"); got != 1 {
 		t.Errorf("continuation lines = %d, want 1 (only the blocked session):\n%s", got, out)
+	}
+}
+
+func TestSessionRowStripes(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	now := time.Now()
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "b", PID: 1, CWD: "/a", Name: "blocked", Kind: status.Blocked, UpdatedAt: now},
+		{ID: "w", PID: 2, CWD: "/a", Name: "working", Kind: status.Working, UpdatedAt: now},
+		{ID: "r", PID: 3, CWD: "/a", Name: "recent", Kind: status.Idle, UpdatedAt: now.Add(-time.Minute)},
+		{ID: "i", PID: 4, CWD: "/a", Name: "stale", Kind: status.Idle, UpdatedAt: now.Add(-time.Hour)},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa"}}}
+	m := applyLoad(New(src, repos, &fakeTerm{}))
+
+	byName := map[string]Row{}
+	for _, r := range m.rows {
+		if r.Kind == RowSession {
+			byName[r.Item.Session.Name] = r
+		}
+	}
+
+	redBar := accentBar(lipgloss.NewStyle(), classBlocked.style().GetForeground())
+	greenBar := accentBar(lipgloss.NewStyle(), classWorking.style().GetForeground())
+
+	if line := m.renderSessionRow(byName["blocked"], false, 60); !strings.Contains(line, redBar) {
+		t.Errorf("blocked row missing red accent stripe: %q", line)
+	}
+	if line := m.renderSessionRow(byName["working"], false, 60); !strings.Contains(line, greenBar) {
+		t.Errorf("working row missing green accent stripe: %q", line)
+	}
+	if line := m.renderSessionRow(byName["recent"], false, 60); strings.Contains(line, "▌") {
+		t.Errorf("recent-idle row should have no accent stripe: %q", line)
+	}
+	if line := m.renderSessionRow(byName["stale"], false, 60); strings.Contains(line, "▌") {
+		t.Errorf("idle row should have no accent stripe: %q", line)
+	}
+}
+
+func TestIdleRowDimsWholeRow(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	now := time.Now()
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "i", PID: 1, CWD: "/a", Name: "stale", Kind: status.Idle, UpdatedAt: now.Add(-time.Hour)},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa"}}}
+	m := applyLoad(New(src, repos, &fakeTerm{}))
+
+	var row Row
+	for _, r := range m.rows {
+		if r.Kind == RowSession {
+			row = r
+		}
+	}
+	line := m.renderSessionRow(row, false, 60)
+
+	// The whole row dims: the name (not just the glyph) renders in dimColor.
+	nameW, _ := sessionLayout(60)
+	padded := "stale" + strings.Repeat(" ", nameW-len("stale"))
+	dimName := lipgloss.NewStyle().Foreground(dimColor).Render(padded)
+	if !strings.Contains(line, dimName) {
+		t.Errorf("idle row name should be dimmed: %q", line)
+	}
+}
+
+func TestSelectionKeepsStripe(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	now := time.Now()
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "b", PID: 1, CWD: "/a", Name: "stuck", Kind: status.Blocked, UpdatedAt: now},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa"}}}
+	m := applyLoad(New(src, repos, &fakeTerm{}))
+
+	var row Row
+	for _, r := range m.rows {
+		if r.Kind == RowSession {
+			row = r
+		}
+	}
+
+	// Unselected: a plain red stripe on the normal background.
+	plainBar := accentBar(lipgloss.NewStyle(), classBlocked.style().GetForeground())
+	if unsel := m.renderSessionRow(row, false, 60); !strings.Contains(unsel, plainBar) {
+		t.Errorf("unselected blocked row missing red accent stripe: %q", unsel)
+	}
+
+	// Selected: the stripe stays, now painted over the selection highlight (it
+	// must not punch a default-background hole in the highlighted row).
+	sel := m.renderSessionRow(row, true, 60)
+	highlightedBar := accentBar(lipgloss.NewStyle().Background(selectHighlight), classBlocked.style().GetForeground())
+	if !strings.Contains(sel, highlightedBar) {
+		t.Errorf("selected blocked row should keep its stripe over the highlight: %q", sel)
+	}
+	if !strings.Contains(sel, "48;5;238") {
+		t.Errorf("selected blocked row missing the highlight: %q", sel)
+	}
+	// The glyph keeps its red foreground on the highlight background too.
+	glyph := lipgloss.NewStyle().Background(selectHighlight).Foreground(lipgloss.Color("1")).Render("⚠")
+	if !strings.Contains(sel, glyph) {
+		t.Errorf("selected blocked glyph lost its red color: %q", sel)
+	}
+}
+
+func TestRepoHeaderStripeWhenBlocked(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	now := time.Now()
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "s1", PID: 1, CWD: "/a", Name: "stuck", Kind: status.Blocked, UpdatedAt: now},
+		{ID: "s2", PID: 2, CWD: "/b", Name: "calm", Kind: status.Idle, UpdatedAt: now.Add(-time.Hour)},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{
+		"/a": {Root: "/a", Name: "aaa"},
+		"/b": {Root: "/b", Name: "bbb"},
+	}}
+	m := applyLoad(New(src, repos, &fakeTerm{}))
+
+	var blockedRepo, calmRepo Row
+	for _, r := range m.rows {
+		if r.Kind != RowRepo {
+			continue
+		}
+		if r.Group.Label == "aaa" {
+			blockedRepo = r
+		} else {
+			calmRepo = r
+		}
+	}
+	redBar := accentBar(lipgloss.NewStyle(), classBlocked.style().GetForeground())
+	if line := m.renderRepoRow(blockedRepo, false, 60); !strings.Contains(line, redBar) {
+		t.Errorf("repo with a blocked child should show a red stripe: %q", line)
+	}
+	if line := m.renderRepoRow(calmRepo, false, 60); strings.Contains(line, "▌") {
+		t.Errorf("repo without a blocked child should have no stripe: %q", line)
+	}
+}
+
+func TestRepoSelectionHighlight(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	m := applyLoad(twoSessionModel())
+	var repoRow Row
+	for _, r := range m.rows {
+		if r.Kind == RowRepo {
+			repoRow = r
+			break
+		}
+	}
+	// twoSessionModel's group has no blocked session, so a selected repo row
+	// shows the highlight and no stripe (the blocked case is covered separately).
+	sel := m.renderRepoRow(repoRow, true, 60)
+	if strings.Contains(sel, "▌") {
+		t.Errorf("non-blocked repo row should have no stripe: %q", sel)
+	}
+	if !strings.Contains(sel, "48;5;238") {
+		t.Errorf("selected repo row missing the highlight: %q", sel)
+	}
+}
+
+func TestRepoSelectionKeepsStripe(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	now := time.Now()
+	src := fakeSource{label: "Claude Code", sessions: []source.Session{
+		{ID: "s1", PID: 1, CWD: "/a", Name: "stuck", Kind: status.Blocked, UpdatedAt: now},
+	}}
+	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa"}}}
+	m := applyLoad(New(src, repos, &fakeTerm{}))
+
+	var repoRow Row
+	for _, r := range m.rows {
+		if r.Kind == RowRepo {
+			repoRow = r
+			break
+		}
+	}
+	// A selected repo whose group is blocked keeps its red stripe, painted over
+	// the selection highlight (the !selected guard was removed deliberately).
+	sel := m.renderRepoRow(repoRow, true, 60)
+	highlightedBar := accentBar(lipgloss.NewStyle().Background(selectHighlight), classBlocked.style().GetForeground())
+	if !strings.Contains(sel, highlightedBar) {
+		t.Errorf("selected blocked repo row should keep its stripe over the highlight: %q", sel)
+	}
+	if !strings.Contains(sel, "48;5;238") {
+		t.Errorf("selected repo row missing the highlight: %q", sel)
+	}
+}
+
+func TestReasonRowStripe(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	m := applyLoad(twoSessionModel())
+	it := &Item{Session: source.Session{Kind: status.Blocked, WaitingFor: "permission: rm"}}
+	line := m.renderReasonRow(it, 60)
+	redBar := accentBar(lipgloss.NewStyle(), classBlocked.style().GetForeground())
+	if !strings.Contains(line, redBar) {
+		t.Errorf("reason row missing the red accent stripe: %q", line)
+	}
+	if !strings.Contains(line, "↳ permission: rm") {
+		t.Errorf("reason row missing its text: %q", line)
 	}
 }

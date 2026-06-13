@@ -44,3 +44,23 @@ func TestClassRankOrder(t *testing.T) {
 		t.Error("classes must rank worst-highest: blocked > working > recent > idle > unknown")
 	}
 }
+
+func TestAccent(t *testing.T) {
+	cases := []struct {
+		c          displayClass
+		wantStripe bool
+		wantDim    bool
+	}{
+		{classBlocked, true, false},
+		{classWorking, true, false},
+		{classRecentIdle, false, false},
+		{classIdle, false, true},
+		{classUnknown, false, true},
+	}
+	for _, tc := range cases {
+		stripe, dim := tc.c.accent()
+		if stripe != tc.wantStripe || dim != tc.wantDim {
+			t.Errorf("%v.accent() = (%v,%v), want (%v,%v)", tc.c, stripe, dim, tc.wantStripe, tc.wantDim)
+		}
+	}
+}

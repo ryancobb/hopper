@@ -24,6 +24,15 @@ const (
 // (rendered yellow) before fading to the dim idle look.
 const recentIdleWindow = 5 * time.Minute
 
+// Row-style palette. selectHighlight is the neutral full-row background of the
+// cursor (Vim visual-mode) selection; dimColor greys quiet rows and secondary
+// text. The status color itself lives on displayClass.style() and is reused for
+// the left accent stripe. 256-color indices, tunable.
+const (
+	selectHighlight lipgloss.Color = "238"
+	dimColor        lipgloss.Color = "8" // keep in sync with classIdle's glyph grey in style()
+)
+
 // classify maps a status kind and its age (time since the status last
 // changed) to a display class. Only Idle splits on age: a session idle for
 // less than recentIdleWindow likely just finished and is waiting on the user.
@@ -54,6 +63,21 @@ func (c displayClass) icon() string {
 		return "○"
 	default:
 		return "·"
+	}
+}
+
+// accent reports whether this class shows a left status stripe and whether its
+// whole row is dimmed. Blocked and working get a stripe (drawn in their glyph
+// color); idle and unknown dim the whole row; recent-idle does neither — its
+// yellow glyph carries the signal. A selected row overrides both.
+func (c displayClass) accent() (stripe, dim bool) {
+	switch c {
+	case classBlocked, classWorking:
+		return true, false
+	case classIdle, classUnknown:
+		return false, true
+	default: // classRecentIdle (and any future non-urgent, non-quiet class)
+		return false, false
 	}
 }
 
