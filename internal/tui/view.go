@@ -197,8 +197,8 @@ func fitLine(ln string, width int) string {
 
 // splitRows resolves embedded newlines so each element is exactly one
 // terminal row — the height budget above counts one row per element, and
-// error strings, blocked reasons, and pasted filter text can all carry
-// newlines. The cursor element index is remapped to its first row. Width
+// error strings and pasted filter text can both carry newlines. The cursor
+// element index is remapped to its first row. Width
 // needs no such guard: bubbletea truncates overwide lines instead of
 // letting them wrap.
 func splitRows(lines []string, cursor int) ([]string, int) {
@@ -234,9 +234,6 @@ func (m Model) renderBody(w int) (lines []string, cursorLine int) {
 			cursorLine = len(lines)
 		}
 		lines = append(lines, m.renderRow(i, r, w))
-		if r.Kind == RowSession && r.Item.Session.Kind == status.Blocked && r.Item.Session.WaitingFor != "" {
-			lines = append(lines, m.renderReasonRow(r.Item, w))
-		}
 	}
 	return lines, cursorLine
 }
@@ -577,19 +574,6 @@ func (m Model) renderSessionRow(r Row, selected bool, w int) string {
 	b.WriteString(base.Render(strings.Repeat(" ", colGap)))
 	b.WriteString(base.Foreground(dimColor).Render(age))
 	return b.String()
-}
-
-// renderReasonRow is the continuation line carrying a blocked session's reason,
-// indented to the name column. It is display-only: it is not a Row, so the
-// cursor never lands on it.
-func (m Model) renderReasonRow(it *Item, w int) string {
-	_, nameStart := sessionLayout(w)
-	// A red stripe ties the reason line to the blocked row above it; the text
-	// stays dim. The stripe occupies the gutter cell, so the reason still aligns
-	// under the session-name column.
-	indent := strings.Repeat(" ", nameStart-1)
-	text := st.meta.Render(truncate("↳ "+it.Session.WaitingFor, w-nameStart))
-	return accentBar(lipgloss.NewStyle(), classBlocked.style().GetForeground()) + indent + text
 }
 
 // groupHasBlocked reports whether any session in g is blocked, marking the

@@ -53,7 +53,7 @@ func TestAccent(t *testing.T) {
 	}{
 		{classBlocked, true, false},
 		{classWorking, true, false},
-		{classRecentIdle, false, false},
+		{classRecentIdle, true, false},
 		{classIdle, false, true},
 		{classUnknown, false, true},
 	}

@@ -421,25 +421,6 @@ func TestSplitShowsPlaceholderWithoutSelection(t *testing.T) {
 	}
 }
 
-func TestBlockedReasonContinuationLine(t *testing.T) {
-	now := time.Now()
-	src := fakeSource{label: "Claude Code", sessions: []source.Session{
-		{ID: "s1", PID: 1, CWD: "/a", Name: "stuck", Kind: status.Blocked, WaitingFor: "permission: rm", UpdatedAt: now},
-		{ID: "s2", PID: 2, CWD: "/a", Name: "fine", Kind: status.Working, UpdatedAt: now},
-	}}
-	repos := fakeRepos{infos: map[string]repo.Info{"/a": {Root: "/a", Name: "aaa", Branch: "main"}}}
-	m := applyLoad(New(src, repos, &fakeTerm{}))
-	m.width = 60
-
-	out := m.View()
-	if !strings.Contains(out, "↳ permission: rm") {
-		t.Errorf("missing reason continuation line:\n%s", out)
-	}
-	if got := strings.Count(out, "↳"); got != 1 {
-		t.Errorf("continuation lines = %d, want 1 (only the blocked session):\n%s", got, out)
-	}
-}
-
 func TestSessionRowStripes(t *testing.T) {
 	old := lipgloss.ColorProfile()
 	defer lipgloss.SetColorProfile(old)
@@ -464,6 +445,7 @@ func TestSessionRowStripes(t *testing.T) {
 
 	redBar := accentBar(lipgloss.NewStyle(), classBlocked.style().GetForeground())
 	greenBar := accentBar(lipgloss.NewStyle(), classWorking.style().GetForeground())
+	yellowBar := accentBar(lipgloss.NewStyle(), classRecentIdle.style().GetForeground())
 
 	if line := m.renderSessionRow(byName["blocked"], false, 60); !strings.Contains(line, redBar) {
 		t.Errorf("blocked row missing red accent stripe: %q", line)
@@ -471,8 +453,8 @@ func TestSessionRowStripes(t *testing.T) {
 	if line := m.renderSessionRow(byName["working"], false, 60); !strings.Contains(line, greenBar) {
 		t.Errorf("working row missing green accent stripe: %q", line)
 	}
-	if line := m.renderSessionRow(byName["recent"], false, 60); strings.Contains(line, "▌") {
-		t.Errorf("recent-idle row should have no accent stripe: %q", line)
+	if line := m.renderSessionRow(byName["recent"], false, 60); !strings.Contains(line, yellowBar) {
+		t.Errorf("recent-idle row missing yellow accent stripe: %q", line)
 	}
 	if line := m.renderSessionRow(byName["stale"], false, 60); strings.Contains(line, "▌") {
 		t.Errorf("idle row should have no accent stripe: %q", line)
@@ -638,22 +620,5 @@ func TestRepoSelectionKeepsStripe(t *testing.T) {
 	}
 	if !strings.Contains(sel, "48;5;238") {
 		t.Errorf("selected repo row missing the highlight: %q", sel)
-	}
-}
-
-func TestReasonRowStripe(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	defer lipgloss.SetColorProfile(old)
-	lipgloss.SetColorProfile(termenv.ANSI256)
-
-	m := applyLoad(twoSessionModel())
-	it := &Item{Session: source.Session{Kind: status.Blocked, WaitingFor: "permission: rm"}}
-	line := m.renderReasonRow(it, 60)
-	redBar := accentBar(lipgloss.NewStyle(), classBlocked.style().GetForeground())
-	if !strings.Contains(line, redBar) {
-		t.Errorf("reason row missing the red accent stripe: %q", line)
-	}
-	if !strings.Contains(line, "↳ permission: rm") {
-		t.Errorf("reason row missing its text: %q", line)
 	}
 }

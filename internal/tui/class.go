@@ -67,16 +67,16 @@ func (c displayClass) icon() string {
 }
 
 // accent reports whether this class shows a left status stripe and whether its
-// whole row is dimmed. Blocked and working get a stripe (drawn in their glyph
-// color); idle and unknown dim the whole row; recent-idle does neither — its
-// yellow glyph carries the signal. A selected row overrides both.
+// whole row is dimmed. Blocked, working, and recent-idle each get a stripe drawn
+// in their glyph color (red, green, yellow); idle and unknown dim the whole row.
+// A selected row overrides both.
 func (c displayClass) accent() (stripe, dim bool) {
 	switch c {
-	case classBlocked, classWorking:
+	case classBlocked, classWorking, classRecentIdle:
 		return true, false
 	case classIdle, classUnknown:
 		return false, true
-	default: // classRecentIdle (and any future non-urgent, non-quiet class)
+	default: // any future non-urgent, non-quiet class
 		return false, false
 	}
 }
