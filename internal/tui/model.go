@@ -83,7 +83,6 @@ const (
 	actionTimeout   = 2 * time.Second
 
 	previewMinLines     = 8
-	previewMaxLines     = 24
 	previewDefaultLines = 12
 )
 
@@ -161,9 +160,10 @@ func previewCmd(term terminal.Terminal, sid string, pid, lines int) tea.Cmd {
 
 // previewSize is the number of pane lines to capture. In the split layout the
 // preview fills the main area, so it tracks the body height; stacked, it takes
-// roughly a third of the screen. Both keep the session list most of the room
-// via the previewMin/Max clamps. A keypress can race the first WindowSizeMsg,
-// so an unknown height gets a sane default.
+// roughly a third of the screen. A previewMinLines floor keeps a sliver even on
+// a short screen; there is no upper cap, so a taller window shows more of the
+// captured pane. A keypress can race the first WindowSizeMsg, so an unknown
+// height gets a sane default.
 func (m Model) previewSize() int {
 	if m.height <= 0 {
 		return previewDefaultLines
@@ -176,7 +176,7 @@ func (m Model) previewSize() int {
 		// over-capture by up to two lines, which renderPreviewPane discards.
 		n = m.height - 6
 	}
-	return min(max(n, previewMinLines), previewMaxLines)
+	return max(n, previewMinLines)
 }
 
 func (m Model) previewIfOpen() tea.Cmd {

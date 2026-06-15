@@ -228,9 +228,9 @@ func TestPreviewSizeTracksHeight(t *testing.T) {
 	if got := m.previewSize(); got != previewMinLines {
 		t.Fatalf("height 12: previewSize=%d want %d", got, previewMinLines)
 	}
-	m.height = 200
-	if got := m.previewSize(); got != previewMaxLines {
-		t.Fatalf("height 200: previewSize=%d want %d", got, previewMaxLines)
+	m.height = 300
+	if got := m.previewSize(); got != 100 { // no upper cap: a third of the screen
+		t.Fatalf("tall terminal: previewSize=%d want 100 (no cap)", got)
 	}
 }
 
