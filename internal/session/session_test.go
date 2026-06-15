@@ -42,6 +42,32 @@ func TestLoadParsesAndFiltersDeadPIDs(t *testing.T) {
 	}
 }
 
+func TestLoadExcludesSDKAgentSessions(t *testing.T) {
+	dir := t.TempDir()
+	// A normal CLI session: kept.
+	writeFile(t, dir, "100.json", `{"pid":100,"sessionId":"cli-1","cwd":"/repo/a","status":"busy","entrypoint":"cli","version":"x"}`)
+	// An SDK-spawned sub-agent: excluded.
+	writeFile(t, dir, "200.json", `{"pid":200,"sessionId":"agent-1","cwd":"/repo/a","entrypoint":"sdk-py","version":"x"}`)
+	// No entrypoint at all (older session file): kept, not an agent.
+	writeFile(t, dir, "300.json", `{"pid":300,"sessionId":"old-1","cwd":"/repo/b","status":"idle","version":"x"}`)
+
+	l := NewLoader(dir, func(int) bool { return true })
+	got, err := l.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, s := range got {
+		ids[s.ID] = true
+	}
+	if ids["agent-1"] {
+		t.Errorf("sdk-py agent session should be excluded, got %+v", got)
+	}
+	if !ids["cli-1"] || !ids["old-1"] {
+		t.Errorf("non-agent sessions should be kept, got %+v", got)
+	}
+}
+
 func TestLoadEmptyDir(t *testing.T) {
 	l := NewLoader(t.TempDir(), func(int) bool { return true })
 	got, err := l.Load()

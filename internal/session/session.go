@@ -32,9 +32,11 @@ type rawSession struct {
 	StatusUpdatedAt int64  `json:"statusUpdatedAt"`
 	StartedAt       int64  `json:"startedAt"`
 	Version         string `json:"version"`
+	Entrypoint      string `json:"entrypoint"`
 }
 
-// Loader reads session files from a directory, filtering out dead processes.
+// Loader reads session files from a directory, filtering out dead processes
+// and SDK-spawned agent sessions (see isAgentSession).
 type Loader struct {
 	dir     string
 	isAlive func(pid int) bool
@@ -45,7 +47,8 @@ func NewLoader(dir string, isAlive func(pid int) bool) *Loader {
 	return &Loader{dir: dir, isAlive: isAlive}
 }
 
-// Load returns all live sessions. Missing dir yields an empty slice, not an error.
+// Load returns all live, user-driven sessions: dead processes and SDK-spawned
+// agent sessions are dropped. Missing dir yields an empty slice, not an error.
 func (l *Loader) Load() ([]Session, error) {
 	entries, err := os.ReadDir(l.dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -70,6 +73,9 @@ func (l *Loader) Load() ([]Session, error) {
 		if !l.isAlive(r.PID) {
 			continue
 		}
+		if isAgentSession(r.Entrypoint) {
+			continue
+		}
 		out = append(out, Session{
 			PID:             r.PID,
 			ID:              r.SessionID,
@@ -82,6 +88,14 @@ func (l *Loader) Load() ([]Session, error) {
 		})
 	}
 	return out, nil
+}
+
+// isAgentSession reports whether a session file belongs to an SDK-spawned agent
+// (e.g. a Task sub-agent), identified by an "sdk" entrypoint prefix ("sdk-py",
+// "sdk-ts", ...). These are not sessions the user drives, so Load drops them;
+// human CLI sessions use "cli" and older files may carry no entrypoint at all.
+func isAgentSession(entrypoint string) bool {
+	return strings.HasPrefix(entrypoint, "sdk")
 }
 
 // PIDAlive reports whether a process is alive (signal 0). Default for NewLoader.
