@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,6 +35,11 @@ type Model struct {
 
 	filtering bool
 	filter    string
+
+	passthroughID     string          // pinned session ID; "" when not in passthrough
+	passthroughName   string          // pinned session's display name, for the banner
+	passthroughHandle terminal.Handle // resolved pane handle, nil until located on enter
+	passthroughTick   bool            // whether the passthrough preview tick is scheduled
 
 	statusMsg string
 	loadErr   error
@@ -77,10 +83,11 @@ func New(src source.Source, repos RepoResolver, term terminal.Terminal) Model {
 }
 
 const (
-	refreshInterval = time.Second
-	spinnerInterval = 100 * time.Millisecond
-	loadTimeout     = 3 * time.Second
-	actionTimeout   = 2 * time.Second
+	refreshInterval     = time.Second
+	spinnerInterval     = 100 * time.Millisecond
+	passthroughInterval = 200 * time.Millisecond
+	loadTimeout         = 3 * time.Second
+	actionTimeout       = 2 * time.Second
 
 	previewMinLines     = 8
 	previewDefaultLines = 12
@@ -88,6 +95,7 @@ const (
 
 type tickMsg time.Time
 type spinnerTickMsg time.Time
+type passthroughTickMsg time.Time
 type loadedMsg struct {
 	items []Item
 	err   error
@@ -110,6 +118,14 @@ func tickCmd() tea.Cmd {
 // does no periodic redraw at all.
 func spinnerTickCmd() tea.Cmd {
 	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg { return spinnerTickMsg(t) })
+}
+
+// passthroughTickCmd drives the live preview while relaying keys to a pane. Like
+// the spinner tick it runs faster than the data tick and recaptures only the
+// pinned pane (never reloading sessions); it runs only while in passthrough and
+// lapses on exit, so an idle screen does no extra periodic work.
+func passthroughTickCmd() tea.Cmd {
+	return tea.Tick(passthroughInterval, func(t time.Time) tea.Msg { return passthroughTickMsg(t) })
 }
 
 // loadCmd fetches and enriches sessions off the UI goroutine, bounded by a timeout.
@@ -158,6 +174,21 @@ func previewCmd(term terminal.Terminal, sid string, pid, lines int) tea.Cmd {
 	}
 }
 
+// previewHandleCmd captures a pane by an already-resolved handle, skipping the
+// locate step previewCmd does. The passthrough tick uses it with the handle
+// cached on enter, so the live preview costs no per-tick locate.
+func previewHandleCmd(term terminal.Terminal, sid string, h terminal.Handle, lines int) tea.Cmd {
+	return func() tea.Msg {
+		if !term.Capabilities().Has(terminal.CapPreview) {
+			return previewMsg{sid: sid, err: terminal.ErrUnsupported}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
+		defer cancel()
+		text, err := term.Preview(ctx, h, lines)
+		return previewMsg{sid: sid, text: text, err: err}
+	}
+}
+
 // previewSize is the number of pane lines to capture. In the split layout the
 // preview fills the main area, so it tracks the body height; stacked, it takes
 // roughly a third of the screen. A previewMinLines floor keeps a sliver even on
@@ -190,6 +221,16 @@ func (m Model) previewIfOpen() tea.Cmd {
 	return previewCmd(m.term, r.Item.Session.ID, r.Item.Session.PID, m.previewSize())
 }
 
+// passthroughPreviewCmd captures the pinned pane during passthrough, by its
+// cached handle, so the live preview tracks the session receiving keystrokes
+// rather than whatever the cursor is on. It is a no-op until the handle resolves.
+func (m Model) passthroughPreviewCmd() tea.Cmd {
+	if m.passthroughID == "" || m.passthroughHandle == nil {
+		return nil
+	}
+	return previewHandleCmd(m.term, m.passthroughID, m.passthroughHandle, m.previewSize())
+}
+
 // Init kicks off the first load and the refresh tick. The spinner tick starts
 // on demand, once a load reveals a working session.
 func (m Model) Init() tea.Cmd {
@@ -208,8 +249,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			cmds = append(cmds, m.loadCmd())
 		}
-		if c := m.previewIfOpen(); c != nil {
-			cmds = append(cmds, c)
+		// In passthrough the faster passthrough tick drives the preview.
+		if !m.inPassthrough() {
+			if c := m.previewIfOpen(); c != nil {
+				cmds = append(cmds, c)
+			}
 		}
 		return m, tea.Batch(cmds...)
 	case spinnerTickMsg:
@@ -219,6 +263,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.spinnerFrame++
 		return m, spinnerTickCmd()
+	case passthroughTickMsg:
+		if !m.inPassthrough() {
+			m.passthroughTick = false // exited; let the tick lapse
+			return m, nil
+		}
+		return m, tea.Batch(passthroughTickCmd(), m.passthroughPreviewCmd())
+	case passthroughLocatedMsg:
+		if msg.id != m.passthroughID {
+			return m, nil // stale: exited or re-entered on another session
+		}
+		if !msg.ok {
+			return m.exitPassthrough("passthrough: pane not found"), nil
+		}
+		m.passthroughHandle = msg.handle
+		return m, m.passthroughPreviewCmd() // first live capture, now that we can
 	case loadedMsg:
 		m.loading = false
 		m.applyLoaded(msg)
@@ -245,6 +304,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.preview = msg.text
 		}
 		return m, nil
+	case sendMsg:
+		if msg.err != nil {
+			if errors.Is(msg.err, terminal.ErrNotFound) {
+				return m.exitPassthrough("send: " + msg.err.Error()), nil
+			}
+			m.statusMsg = "send: " + msg.err.Error()
+			return m, nil
+		}
+		m.statusMsg = ""
+		// Re-capture right after the send so the keystroke echoes immediately
+		// rather than waiting up to one passthrough-tick interval. The tick still
+		// covers passive pane updates (e.g. streamed output while you watch).
+		return m, m.passthroughPreviewCmd()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -258,6 +330,13 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 	}
 	m.groups = BuildGroups(msg.items)
 	m.rebuildRows()
+	// A refresh that drops the pinned session ends passthrough: no pane remains
+	// to relay to.
+	if m.inPassthrough() {
+		if _, ok := m.sessionByID(m.passthroughID); !ok {
+			*m = m.exitPassthrough("passthrough: session ended")
+		}
+	}
 }
 
 func (m *Model) rebuildRows() {
@@ -311,6 +390,9 @@ func (m *Model) moveCursor(d int) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.inPassthrough() {
+		return m.handlePassthroughKey(msg)
+	}
 	if m.filtering {
 		return m.handleFilterKey(msg)
 	}
@@ -341,6 +423,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		return m.activate()
+	case "i":
+		return m.enterPassthrough()
 	case "o":
 		return m.focusSelected()
 	case "p":

@@ -91,6 +91,27 @@ func TestKittyPreviewCapturesLogicalLines(t *testing.T) {
 	}
 }
 
+func TestKittySendTextCommand(t *testing.T) {
+	var stdin string
+	var args []string
+	k := &Kitty{runIn: func(_ context.Context, in string, a ...string) ([]byte, error) {
+		stdin, args = in, a
+		return nil, nil
+	}}
+	if err := k.SendText(context.Background(), 10, "2\r"); err != nil {
+		t.Fatal(err)
+	}
+	if stdin != "2\r" {
+		t.Fatalf("stdin = %q, want %q", stdin, "2\r")
+	}
+	if got := strings.Join(args, " "); got != "send-text --match id:10 --stdin" {
+		t.Fatalf("send-text args: %q", got)
+	}
+	if !k.Capabilities().Has(CapSendText) {
+		t.Fatal("kitty should advertise CapSendText")
+	}
+}
+
 func TestKittyPreviewKeepsColor(t *testing.T) {
 	// A colored line, a line that is only escape codes (visually blank), and a
 	// plain line. The blank one must be dropped; the colors must survive.

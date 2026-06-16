@@ -32,11 +32,18 @@ type fakeRepos struct{ infos map[string]repo.Info }
 
 func (f fakeRepos) Resolve(_ context.Context, cwd string) repo.Info { return f.infos[cwd] }
 
+type sentText struct {
+	handle terminal.Handle
+	data   string
+}
+
 type fakeTerm struct {
 	caps    terminal.Capability
 	located map[int]terminal.Handle
 	focused []terminal.Handle
 	preview string
+	sent    []sentText
+	sendErr error
 }
 
 func (f *fakeTerm) Name() string                      { return "fake" }
@@ -51,6 +58,10 @@ func (f *fakeTerm) Focus(_ context.Context, h terminal.Handle) error {
 }
 func (f *fakeTerm) Preview(_ context.Context, h terminal.Handle, n int) (string, error) {
 	return f.preview, nil
+}
+func (f *fakeTerm) SendText(_ context.Context, h terminal.Handle, data string) error {
+	f.sent = append(f.sent, sentText{handle: h, data: data})
+	return f.sendErr
 }
 
 func twoSessionModel() Model {

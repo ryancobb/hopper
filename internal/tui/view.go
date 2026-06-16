@@ -12,7 +12,7 @@ import (
 	"hopper/internal/status"
 )
 
-const footer = "j/k move · h/l fold · Enter focus · p preview · / filter · r refresh · q quit"
+const footer = "j/k move · h/l fold · Enter focus · i send · p preview · / filter · r refresh · q quit"
 
 const defaultWidth = 80
 
@@ -78,6 +78,11 @@ func newStyles() styles {
 }
 
 var st = newStyles()
+
+// passthroughStyle marks the passthrough banner tag: keystrokes are being
+// relayed to a pane, so it reads as a distinct, attention-colored mode line.
+var passthroughStyle = lipgloss.NewStyle().Bold(true).
+	Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3"))
 
 func (m Model) contentWidth() int {
 	if m.width > 0 {
@@ -256,12 +261,28 @@ func (m Model) renderFooter() []string {
 	if m.statusMsg != "" {
 		lines = append(lines, "", m.statusMsg)
 	}
-	if m.filtering {
+	switch {
+	case m.inPassthrough():
+		lines = append(lines, "", m.passthroughBanner())
+	case m.filtering:
 		lines = append(lines, "", "/"+m.filter)
-	} else {
+	default:
 		lines = append(lines, "", st.footer.Render(footer))
 	}
 	return lines
+}
+
+// passthroughBanner is the footer line shown while relaying keys: a tag, the
+// pinned session's name (cached on enter), and the exit chord. Until the pane
+// handle resolves, keystrokes are not yet relayed, so the name carries a
+// "connecting" hint rather than dropping keys silently.
+func (m Model) passthroughBanner() string {
+	name := m.passthroughName
+	if m.passthroughHandle == nil {
+		name += " (connecting…)"
+	}
+	return passthroughStyle.Render(" PASSTHROUGH ") + " → " + name +
+		"   " + st.footer.Render("Ctrl-] to exit")
 }
 
 // Preview-box geometry. A content row is "│ <content> │" (boxFrameW cells of
@@ -277,16 +298,25 @@ const (
 )
 
 // previewContent returns the box label and the pane lines to display. Pane
-// lines are present only when the capture belongs to the currently selected
-// session; otherwise (repo row, or a capture still in flight) a single dim
-// "select a session" placeholder stands in.
+// lines are present only when the capture belongs to the session being shown;
+// otherwise (repo row, or a capture still in flight) a single dim "select a
+// session" placeholder stands in. During passthrough the preview is locked to
+// the pinned session, independent of the cursor.
 func (m Model) previewContent() (label string, content []string) {
 	label = "preview"
-	if sel := m.selectedItem(); sel != nil {
-		label = fmt.Sprintf("preview · %s (%s)", short(sel.Session.ID), sel.Repo.Name)
-		if m.preview != "" && m.previewSID == sel.Session.ID {
-			content = strings.Split(m.preview, "\n")
+	sid := ""
+	switch {
+	case m.inPassthrough():
+		sid = m.passthroughID
+		label = "preview · " + m.passthroughName
+	default:
+		if sel := m.selectedItem(); sel != nil {
+			sid = sel.Session.ID
+			label = fmt.Sprintf("preview · %s (%s)", short(sel.Session.ID), sel.Repo.Name)
 		}
+	}
+	if sid != "" && m.preview != "" && m.previewSID == sid {
+		content = strings.Split(m.preview, "\n")
 	}
 	if len(content) == 0 {
 		content = []string{st.meta.Render("select a session")}

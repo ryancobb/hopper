@@ -12,18 +12,26 @@ import (
 
 // Kitty controls kitty via `kitty @`.
 type Kitty struct {
-	run func(ctx context.Context, args ...string) ([]byte, error)
+	run   func(ctx context.Context, args ...string) ([]byte, error)
+	runIn func(ctx context.Context, stdin string, args ...string) ([]byte, error)
 }
 
 // NewKitty returns a kitty backend talking to `kitty @` over KITTY_LISTEN_ON.
 func NewKitty() *Kitty {
-	return &Kitty{run: func(ctx context.Context, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, "kitty", append([]string{"@"}, args...)...).Output()
-	}}
+	return &Kitty{
+		run: func(ctx context.Context, args ...string) ([]byte, error) {
+			return exec.CommandContext(ctx, "kitty", append([]string{"@"}, args...)...).Output()
+		},
+		runIn: func(ctx context.Context, stdin string, args ...string) ([]byte, error) {
+			cmd := exec.CommandContext(ctx, "kitty", append([]string{"@"}, args...)...)
+			cmd.Stdin = strings.NewReader(stdin)
+			return cmd.Output()
+		},
+	}
 }
 
 func (k *Kitty) Name() string             { return "kitty" }
-func (k *Kitty) Capabilities() Capability { return CapFocus | CapPreview }
+func (k *Kitty) Capabilities() Capability { return CapFocus | CapPreview | CapSendText }
 
 type klsWindow struct {
 	ID                  int `json:"id"`
@@ -86,6 +94,18 @@ func (k *Kitty) Preview(ctx context.Context, h Handle, lines int) (string, error
 		return "", err
 	}
 	return lastNonEmptyLines(string(out), lines), nil
+}
+
+// SendText sends data to the window verbatim. The bytes are piped on stdin
+// (`send-text --stdin`) so kitty performs no escape interpretation: control
+// bytes and escape sequences the caller built reach the pane unchanged.
+func (k *Kitty) SendText(ctx context.Context, h Handle, data string) error {
+	id, ok := h.(int)
+	if !ok {
+		return ErrBadHandle
+	}
+	_, err := k.runIn(ctx, data, "send-text", "--match", fmt.Sprintf("id:%d", id), "--stdin")
+	return err
 }
 
 // lastNonEmptyLines keeps the last n visually non-empty logical lines. Lines

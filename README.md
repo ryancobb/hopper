@@ -13,7 +13,7 @@ back to the list with the preview stacked below. Toggle the preview with `p`.
 
 ## Keys
 
-    j/k move · h/l fold · Enter focus · p preview · / filter · r refresh · q quit
+    j/k move · h/l fold · Enter focus · i send · p preview · / filter · r refresh · q quit
 
 ## Flags
 

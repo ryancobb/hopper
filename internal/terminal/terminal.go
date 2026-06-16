@@ -11,8 +11,9 @@ import (
 type Capability uint
 
 const (
-	CapFocus   Capability = 1 << iota // bring a session's pane to the foreground
-	CapPreview                        // read a session's pane contents
+	CapFocus    Capability = 1 << iota // bring a session's pane to the foreground
+	CapPreview                         // read a session's pane contents
+	CapSendText                        // write keystrokes/text to a session's pane
 )
 
 // Has reports whether c includes x.
@@ -35,6 +36,10 @@ type Terminal interface {
 	// including colors left open across rows; callers must not assume plain
 	// text.
 	Preview(ctx context.Context, h Handle, lines int) (string, error)
+	// SendText transmits data to the pane verbatim, including control bytes and
+	// escape sequences. Callers pre-encode keys to bytes; the backend must not
+	// re-interpret or alter them.
+	SendText(ctx context.Context, h Handle, data string) error
 }
 
 // Errors returned by backends.
@@ -52,6 +57,7 @@ func (none) Capabilities() Capability                             { return 0 }
 func (none) Locate(context.Context, int) (Handle, bool)           { return nil, false }
 func (none) Focus(context.Context, Handle) error                  { return ErrUnsupported }
 func (none) Preview(context.Context, Handle, int) (string, error) { return "", ErrUnsupported }
+func (none) SendText(context.Context, Handle, string) error       { return ErrUnsupported }
 
 // Detect picks a backend. mode is "auto", "kitty", or "none".
 func Detect(mode string) Terminal {

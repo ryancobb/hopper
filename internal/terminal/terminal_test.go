@@ -29,6 +29,16 @@ func TestNoneBackend(t *testing.T) {
 	}
 }
 
+func TestNoneSendTextUnsupported(t *testing.T) {
+	n := none{}
+	if n.Capabilities().Has(CapSendText) {
+		t.Fatal("none should not advertise CapSendText")
+	}
+	if err := n.SendText(context.Background(), nil, "x"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("want ErrUnsupported, got %v", err)
+	}
+}
+
 func TestDetectModes(t *testing.T) {
 	if _, ok := Detect("none").(none); !ok {
 		t.Fatal("mode none should give none backend")
