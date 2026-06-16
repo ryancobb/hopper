@@ -13,6 +13,29 @@ import (
 	"hopper/internal/status"
 )
 
+func TestKillConfirmFooter(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.width, m.height = 50, 20
+	m.cursor = 1 // s1, name "first"
+	next, _ := m.Update(key("x"))
+	m = next.(Model)
+	out := m.View()
+	// The confirm reads as a distinct banner (like passthrough): a KILL tag, the
+	// session name, and what y / any other key do.
+	if !strings.Contains(out, "KILL") {
+		t.Fatalf("footer missing kill banner tag:\n%s", out)
+	}
+	if !strings.Contains(out, "first") {
+		t.Fatalf("kill banner missing the session name:\n%s", out)
+	}
+	if !strings.Contains(out, "y") || !strings.Contains(out, "cancel") {
+		t.Fatalf("kill banner missing the y/cancel hint:\n%s", out)
+	}
+	if strings.Contains(out, "r refresh") {
+		t.Fatalf("normal footer should be hidden during the confirm:\n%s", out)
+	}
+}
+
 func TestSessionLayout(t *testing.T) {
 	// Icon-only with a 1-cell gutter: the name starts at column 4 (gutter 1 +
 	// indent 1 + glyph 1 + gap 1) and flexes to fill the row minus the gap and
@@ -620,5 +643,16 @@ func TestRepoSelectionKeepsStripe(t *testing.T) {
 	}
 	if !strings.Contains(sel, "48;5;238") {
 		t.Errorf("selected repo row missing the highlight: %q", sel)
+	}
+}
+
+func TestFooterListsNewKeys(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.width, m.height = 80, 20
+	out := m.View()
+	for _, want := range []string{"x kill", "n new", "s sleep"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("footer missing %q:\n%s", want, out)
+		}
 	}
 }

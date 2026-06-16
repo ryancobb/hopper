@@ -125,3 +125,21 @@ func TestKittyPreviewKeepsColor(t *testing.T) {
 		t.Fatalf("preview with color: %q", out)
 	}
 }
+
+func TestKittyLaunchCommand(t *testing.T) {
+	var calls [][]string
+	k := fakeKitty("", &calls)
+	if err := k.Launch(context.Background(), "/work/acme"); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(calls[0], " ")
+	if got != "launch --type=tab --keep-focus --cwd=/work/acme claude" {
+		t.Fatalf("launch args: %q", got)
+	}
+}
+
+func TestKittyAdvertisesLaunch(t *testing.T) {
+	if !NewKitty().Capabilities().Has(CapLaunch) {
+		t.Fatal("kitty should advertise CapLaunch")
+	}
+}

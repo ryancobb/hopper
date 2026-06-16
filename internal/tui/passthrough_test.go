@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"hopper/internal/repo"
 	"hopper/internal/source"
 	"hopper/internal/status"
@@ -262,6 +264,27 @@ func TestPassthroughTickStartsAndLapses(t *testing.T) {
 	}
 }
 
+func TestPassthroughPreviewBorderMatchesFooter(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(old)
+	lipgloss.SetColorProfile(termenv.ANSI256)
+
+	m := enteredPassthrough(t)
+	m.width, m.height = 50, 20 // < splitMinWidth → stacked, single preview box
+
+	out := m.View()
+	if want := passthroughBorder.Render("╭─ "); !strings.Contains(out, want) {
+		t.Fatalf("preview border should take the passthrough accent while relaying:\n%s", out)
+	}
+
+	// Leaving passthrough returns the preview frame to the dim meta border.
+	m = m.exitPassthrough("")
+	out = m.View()
+	if calm := st.meta.Render("╭─ "); !strings.Contains(out, calm) {
+		t.Fatalf("preview border should revert to the dim frame outside passthrough:\n%s", out)
+	}
+}
+
 func TestKeyToBytes(t *testing.T) {
 	cases := []struct {
 		name string
@@ -300,7 +323,7 @@ func TestKeyToBytes(t *testing.T) {
 
 func TestPassthroughBannerInFooter(t *testing.T) {
 	m := enteredPassthrough(t) // pinned to s1, name "first"
-	m.width, m.height = 50, 20  // < splitMinWidth → stacked, footer rendered
+	m.width, m.height = 50, 20 // < splitMinWidth → stacked, footer rendered
 	out := m.View()
 	if !strings.Contains(out, "PASSTHROUGH") {
 		t.Fatalf("footer missing passthrough banner:\n%s", out)

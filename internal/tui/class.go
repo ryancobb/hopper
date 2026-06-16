@@ -33,17 +33,17 @@ const (
 	dimColor        lipgloss.Color = "8" // keep in sync with classIdle's glyph grey in style()
 )
 
-// classify maps a status kind and its age (time since the status last
-// changed) to a display class. Only Idle splits on age: a session idle for
-// less than recentIdleWindow likely just finished and is waiting on the user.
-func classify(k status.Kind, age time.Duration) displayClass {
+// classify maps a status kind, its age, and whether it has been slept
+// (snoozed) to a display class. Only Idle splits on age, and a slept idle is
+// demoted to the quiet idle look even within the recent window.
+func classify(k status.Kind, age time.Duration, slept bool) displayClass {
 	switch k {
 	case status.Blocked:
 		return classBlocked
 	case status.Working:
 		return classWorking
 	case status.Idle:
-		if age < recentIdleWindow {
+		if age < recentIdleWindow && !slept {
 			return classRecentIdle
 		}
 		return classIdle

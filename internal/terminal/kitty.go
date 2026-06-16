@@ -31,7 +31,7 @@ func NewKitty() *Kitty {
 }
 
 func (k *Kitty) Name() string             { return "kitty" }
-func (k *Kitty) Capabilities() Capability { return CapFocus | CapPreview | CapSendText }
+func (k *Kitty) Capabilities() Capability { return CapFocus | CapPreview | CapSendText | CapLaunch }
 
 type klsWindow struct {
 	ID                  int `json:"id"`
@@ -105,6 +105,15 @@ func (k *Kitty) SendText(ctx context.Context, h Handle, data string) error {
 		return ErrBadHandle
 	}
 	_, err := k.runIn(ctx, data, "send-text", "--match", fmt.Sprintf("id:%d", id), "--stdin")
+	return err
+}
+
+// Launch opens a new kitty tab whose foreground process is `claude`, running in
+// cwd. --keep-focus leaves the focus on the current window (hopper) rather than
+// switching to the new tab, so the user stays in hopper; the session shows up on
+// the next source refresh. kitty prints the new window id on stdout, ignored.
+func (k *Kitty) Launch(ctx context.Context, cwd string) error {
+	_, err := k.run(ctx, "launch", "--type=tab", "--keep-focus", "--cwd="+cwd, "claude")
 	return err
 }
 

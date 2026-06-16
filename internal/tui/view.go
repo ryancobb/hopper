@@ -12,7 +12,7 @@ import (
 	"hopper/internal/status"
 )
 
-const footer = "j/k move · h/l fold · Enter focus · i send · p preview · / filter · r refresh · q quit"
+const footer = "j/k move · h/l fold · Enter focus · i send · n new · x kill · s sleep · p preview · / filter · r refresh · q quit"
 
 const defaultWidth = 80
 
@@ -61,19 +61,19 @@ func sessionLayout(w int) (nameW, nameStart int) {
 // styles holds the structural lipgloss styles for the view. Status colors
 // live on displayClass so session rows and repo badges share one mapping.
 type styles struct {
-	header   lipgloss.Style
-	count    lipgloss.Style
-	meta     lipgloss.Style
-	footer   lipgloss.Style
+	header lipgloss.Style
+	count  lipgloss.Style
+	meta   lipgloss.Style
+	footer lipgloss.Style
 }
 
 func newStyles() styles {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	return styles{
-		header:   lipgloss.NewStyle().Bold(true),
-		count:    dim,
-		meta:     dim,
-		footer:   dim,
+		header: lipgloss.NewStyle().Bold(true),
+		count:  dim,
+		meta:   dim,
+		footer: dim,
 	}
 }
 
@@ -83,6 +83,17 @@ var st = newStyles()
 // relayed to a pane, so it reads as a distinct, attention-colored mode line.
 var passthroughStyle = lipgloss.NewStyle().Bold(true).
 	Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3"))
+
+// passthroughBorder colors the preview box frame while relaying keys, matching
+// the passthrough footer banner's accent so the whole pane reads as the live
+// send target rather than a passive capture.
+var passthroughBorder = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+
+// killStyle marks the kill-confirm banner tag in red: the action is destructive
+// and waiting on the user, so it reads as a distinct, alarming mode line rather
+// than a quiet status message.
+var killStyle = lipgloss.NewStyle().Bold(true).
+	Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1"))
 
 func (m Model) contentWidth() int {
 	if m.width > 0 {
@@ -166,7 +177,7 @@ func (m Model) renderSplit(w int) string {
 	// rows and renderPreviewPane pads the capture, so a short body — "no live
 	// sessions", an error, an empty filter — fills its column instead of
 	// collapsing it and dragging the gap out from under the header.
-	side := renderBox("sessions", sidebar, sw, contentH, true)
+	side := renderBox("sessions", sidebar, sw, contentH, true, st.meta)
 	main := m.renderPreviewPane(mainW, contentH)
 	gap := make([]string, len(side))
 	for i := range gap {
@@ -264,12 +275,21 @@ func (m Model) renderFooter() []string {
 	switch {
 	case m.inPassthrough():
 		lines = append(lines, "", m.passthroughBanner())
+	case m.pendingKill != nil:
+		lines = append(lines, "", m.killConfirmBanner())
 	case m.filtering:
 		lines = append(lines, "", "/"+m.filter)
 	default:
 		lines = append(lines, "", st.footer.Render(footer))
 	}
 	return lines
+}
+
+// bannerLine renders a footer mode banner: a colored tag, the subject it acts
+// on, and a dim hint. Both the passthrough and kill-confirm banners use it so a
+// distinct mode line reads consistently.
+func bannerLine(tag lipgloss.Style, tagText, subject, hint string) string {
+	return tag.Render(tagText) + " " + subject + "   " + st.footer.Render(hint)
 }
 
 // passthroughBanner is the footer line shown while relaying keys: a tag, the
@@ -281,8 +301,14 @@ func (m Model) passthroughBanner() string {
 	if m.passthroughHandle == nil {
 		name += " (connecting…)"
 	}
-	return passthroughStyle.Render(" PASSTHROUGH ") + " → " + name +
-		"   " + st.footer.Render("Ctrl-] to exit")
+	return bannerLine(passthroughStyle, " PASSTHROUGH ", "→ "+name, "Ctrl-] to exit")
+}
+
+// killConfirmBanner is the footer line shown while a kill is awaiting
+// confirmation: a red KILL tag, the target session's name, and what the keys do.
+// It mirrors the passthrough banner so a destructive prompt is unmistakable.
+func (m Model) killConfirmBanner() string {
+	return bannerLine(killStyle, " KILL ", m.pendingKill.name, "y to confirm · any other key cancels")
 }
 
 // Preview-box geometry. A content row is "│ <content> │" (boxFrameW cells of
@@ -345,7 +371,17 @@ func (m Model) renderPreviewBox(w int) []string {
 	if limit > 0 && len(content) > limit {
 		content = content[len(content)-limit:]
 	}
-	return renderBox(label, content, w, 0, false)
+	return renderBox(label, content, w, 0, false, m.previewBorder())
+}
+
+// previewBorder is the preview box's frame color. While relaying keys it turns
+// the passthrough accent, matching the footer banner so the whole pane reads as
+// the live send target; otherwise it is the dim meta frame the sidebar shares.
+func (m Model) previewBorder() lipgloss.Style {
+	if m.inPassthrough() {
+		return passthroughBorder
+	}
+	return st.meta
 }
 
 // renderPreviewPane renders the preview box at width w with exactly rows
@@ -357,7 +393,7 @@ func (m Model) renderPreviewPane(w, rows int) []string {
 	if len(content) > rows {
 		content = content[len(content)-rows:]
 	}
-	return renderBox(label, content, w, rows, true)
+	return renderBox(label, content, w, rows, true, m.previewBorder())
 }
 
 // previewBody returns the box label and the captured content reflowed to the
@@ -370,36 +406,37 @@ func (m Model) previewBody(w int) (label string, content []string) {
 // renderBox wraps content in a labeled rounded box at width w, the shared frame
 // for both the preview pane and the session sidebar. When pad is true the body
 // is exactly rows lines — content padded with blank rows (the fixed-height
-// split columns); when false it sizes to len(content) (the stacked box).
-func renderBox(label string, content []string, w, rows int, pad bool) []string {
+// split columns); when false it sizes to len(content) (the stacked box). border
+// styles the frame, so the preview can switch to the passthrough accent.
+func renderBox(label string, content []string, w, rows int, pad bool, border lipgloss.Style) []string {
 	n := len(content)
 	if pad {
 		n = rows
 	}
 	lines := make([]string, 0, n+2)
-	lines = append(lines, boxTop(label, w))
+	lines = append(lines, boxTop(label, w, border))
 	for i := 0; i < n; i++ {
 		ln := ""
 		if i < len(content) {
 			ln = content[i]
 		}
-		lines = append(lines, boxLine(ln, w))
+		lines = append(lines, boxLine(ln, w, border))
 	}
-	return append(lines, boxBottom(w))
+	return append(lines, boxBottom(w, border))
 }
 
 // boxTop renders the box's top border with the label embedded:
-// "╭─ preview · a1b2 (repo) ────╮". Border dim, label plain. The label is
-// clipped by cell width (not runes) so wide characters cannot push the
+// "╭─ preview · a1b2 (repo) ────╮". Frame in the border style, label plain. The
+// label is clipped by cell width (not runes) so wide characters cannot push the
 // border past w.
-func boxTop(label string, w int) string {
+func boxTop(label string, w int, border lipgloss.Style) string {
 	label = ansi.Truncate(label, max(w-boxLabelAffixW-1, 1), "…")
 	fill := max(w-boxLabelAffixW-lipgloss.Width(label), 0)
-	return st.meta.Render("╭─ ") + label + st.meta.Render(" "+strings.Repeat("─", fill)+"╮")
+	return border.Render("╭─ ") + label + border.Render(" "+strings.Repeat("─", fill)+"╮")
 }
 
-func boxBottom(w int) string {
-	return st.meta.Render("╰" + strings.Repeat("─", max(w-2, 0)) + "╯")
+func boxBottom(w int, border lipgloss.Style) string {
+	return border.Render("╰" + strings.Repeat("─", max(w-2, 0)) + "╯")
 }
 
 // innerWidth is the cell width available for content inside the preview box,
@@ -457,12 +494,12 @@ func carryStyle(prev, row string) string {
 // lines can carry unterminated ANSI colors, so truncation and padding must be
 // ANSI-aware, and the color is reset before the right border to keep it from
 // tinting the frame or the rest of the UI.
-func boxLine(ln string, w int) string {
+func boxLine(ln string, w int, border lipgloss.Style) string {
 	inner := innerWidth(w)
 	ln = ansi.Truncate(ln, inner, "…")
 	pad := max(inner-lipgloss.Width(ln), 0)
-	return st.meta.Render("│") + " " + ln + ansi.ResetStyle +
-		strings.Repeat(" ", pad) + " " + st.meta.Render("│")
+	return border.Render("│") + " " + ln + ansi.ResetStyle +
+		strings.Repeat(" ", pad) + " " + border.Render("│")
 }
 
 // clampToCursor trims lines to at most budget, sliding the window only as
@@ -560,7 +597,7 @@ func accentBar(base lipgloss.Style, c lipgloss.TerminalColor) string {
 func (m Model) renderSessionRow(r Row, selected bool, w int) string {
 	it := r.Item
 	nameW, _ := sessionLayout(w)
-	cls := classify(it.Session.Kind, time.Since(it.Session.UpdatedAt))
+	cls := m.displayClassFor(it.Session)
 
 	hasStripe, dim := cls.accent()
 	if selected {

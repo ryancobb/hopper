@@ -14,6 +14,7 @@ const (
 	CapFocus    Capability = 1 << iota // bring a session's pane to the foreground
 	CapPreview                         // read a session's pane contents
 	CapSendText                        // write keystrokes/text to a session's pane
+	CapLaunch                          // spawn a new session pane in a working directory
 )
 
 // Has reports whether c includes x.
@@ -40,6 +41,10 @@ type Terminal interface {
 	// escape sequences. Callers pre-encode keys to bytes; the backend must not
 	// re-interpret or alter them.
 	SendText(ctx context.Context, h Handle, data string) error
+	// Launch starts a new agent session (runs `claude`) in cwd, in a new
+	// pane/tab. The backend chooses placement; the session is discovered on the
+	// next source refresh once it writes its session file.
+	Launch(ctx context.Context, cwd string) error
 }
 
 // Errors returned by backends.
@@ -58,6 +63,7 @@ func (none) Locate(context.Context, int) (Handle, bool)           { return nil, 
 func (none) Focus(context.Context, Handle) error                  { return ErrUnsupported }
 func (none) Preview(context.Context, Handle, int) (string, error) { return "", ErrUnsupported }
 func (none) SendText(context.Context, Handle, string) error       { return ErrUnsupported }
+func (none) Launch(context.Context, string) error                 { return ErrUnsupported }
 
 // Detect picks a backend. mode is "auto", "kitty", or "none".
 func Detect(mode string) Terminal {

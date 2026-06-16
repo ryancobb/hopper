@@ -10,21 +10,24 @@ import (
 
 func TestClassify(t *testing.T) {
 	cases := []struct {
-		kind status.Kind
-		age  time.Duration
-		want displayClass
+		kind  status.Kind
+		age   time.Duration
+		slept bool
+		want  displayClass
 	}{
-		{status.Idle, 0, classRecentIdle},
-		{status.Idle, recentIdleWindow - time.Second, classRecentIdle},
-		{status.Idle, recentIdleWindow, classIdle}, // boundary: exactly 5m is stale
-		{status.Idle, 2 * time.Hour, classIdle},
-		{status.Working, 2 * time.Hour, classWorking}, // only Idle splits on age
-		{status.Blocked, 2 * time.Hour, classBlocked},
-		{status.Unknown, 0, classUnknown},
+		{status.Idle, 0, false, classRecentIdle},
+		{status.Idle, recentIdleWindow - time.Second, false, classRecentIdle},
+		{status.Idle, recentIdleWindow, false, classIdle}, // boundary: exactly 5m is stale
+		{status.Idle, 2 * time.Hour, false, classIdle},
+		{status.Idle, 0, true, classIdle},                  // slept: recent idle demotes
+		{status.Idle, recentIdleWindow - time.Second, true, classIdle},
+		{status.Working, 2 * time.Hour, false, classWorking}, // only Idle splits on age
+		{status.Blocked, 2 * time.Hour, false, classBlocked},
+		{status.Unknown, 0, false, classUnknown},
 	}
 	for _, c := range cases {
-		if got := classify(c.kind, c.age); got != c.want {
-			t.Errorf("classify(%v, %v) = %v, want %v", c.kind, c.age, got, c.want)
+		if got := classify(c.kind, c.age, c.slept); got != c.want {
+			t.Errorf("classify(%v, %v, slept=%v) = %v, want %v", c.kind, c.age, c.slept, got, c.want)
 		}
 	}
 }

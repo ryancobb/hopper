@@ -38,12 +38,14 @@ type sentText struct {
 }
 
 type fakeTerm struct {
-	caps    terminal.Capability
-	located map[int]terminal.Handle
-	focused []terminal.Handle
-	preview string
-	sent    []sentText
-	sendErr error
+	caps      terminal.Capability
+	located   map[int]terminal.Handle
+	focused   []terminal.Handle
+	preview   string
+	sent      []sentText
+	sendErr   error
+	launched  []string // cwds passed to Launch
+	launchErr error
 }
 
 func (f *fakeTerm) Name() string                      { return "fake" }
@@ -62,6 +64,10 @@ func (f *fakeTerm) Preview(_ context.Context, h terminal.Handle, n int) (string,
 func (f *fakeTerm) SendText(_ context.Context, h terminal.Handle, data string) error {
 	f.sent = append(f.sent, sentText{handle: h, data: data})
 	return f.sendErr
+}
+func (f *fakeTerm) Launch(_ context.Context, cwd string) error {
+	f.launched = append(f.launched, cwd)
+	return f.launchErr
 }
 
 func twoSessionModel() Model {
@@ -296,7 +302,7 @@ func TestBoxLineTruncatesAndResetsColor(t *testing.T) {
 	// A red line longer than the view, with no closing reset: it must be
 	// truncated to fit between the box borders, and its color must be reset
 	// before the right border so it cannot tint it.
-	line := boxLine("\x1b[31m"+strings.Repeat("x", 50), 30)
+	line := boxLine("\x1b[31m"+strings.Repeat("x", 50), 30, st.meta)
 	if w := lipgloss.Width(line); w != 30 {
 		t.Errorf("box line width = %d, want 30: %q", w, line)
 	}
@@ -307,7 +313,7 @@ func TestBoxLineTruncatesAndResetsColor(t *testing.T) {
 		t.Errorf("color should be reset before the right border: %q", line)
 	}
 	// A short line is padded so the right border stays aligned.
-	line = boxLine("hi", 30)
+	line = boxLine("hi", 30, st.meta)
 	if w := lipgloss.Width(line); w != 30 {
 		t.Errorf("padded box line width = %d, want 30: %q", w, line)
 	}
@@ -363,7 +369,7 @@ func TestPreviewPanelBoxed(t *testing.T) {
 func TestBoxTopWideRunesStayInWidth(t *testing.T) {
 	// Rune count and cell width disagree for CJK names; the top border must
 	// be measured in cells or it overflows and the ╮ corner gets clipped.
-	top := boxTop("preview · abcd (日本語のリポジトリ名)", 30)
+	top := boxTop("preview · abcd (日本語のリポジトリ名)", 30, st.meta)
 	if w := lipgloss.Width(top); w != 30 {
 		t.Errorf("CJK label top border width = %d, want 30: %q", w, top)
 	}

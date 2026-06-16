@@ -28,6 +28,7 @@ type Model struct {
 	cursor    int
 	anchor    rowAnchor
 	collapsed map[string]bool
+	slept     map[string]time.Time // session ID -> acknowledged UpdatedAt (snooze)
 
 	showPreview bool
 	preview     string
@@ -40,6 +41,12 @@ type Model struct {
 	passthroughName   string          // pinned session's display name, for the banner
 	passthroughHandle terminal.Handle // resolved pane handle, nil until located on enter
 	passthroughTick   bool            // whether the passthrough preview tick is scheduled
+
+	pendingKill *pendingKill // a kill awaiting y/n confirmation; nil when none
+
+	kill func(pid int) error // sends SIGTERM; injectable for tests
+
+	pendingLaunch *pendingLaunch // a just-launched session to focus once it appears
 
 	statusMsg string
 	loadErr   error
@@ -78,6 +85,8 @@ type rowAnchor struct {
 func New(src source.Source, repos RepoResolver, term terminal.Terminal) Model {
 	return Model{src: src, repos: repos, term: term,
 		collapsed:   map[string]bool{},
+		slept:       map[string]time.Time{},
+		kill:        defaultKill,
 		loading:     true,
 		showPreview: term.Capabilities().Has(terminal.CapPreview)}
 }
@@ -287,11 +296,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case focusMsg:
+		m.setActionStatus("focus", msg.err)
+		return m, nil
+	case launchMsg:
 		if msg.err != nil {
-			m.statusMsg = "focus: " + msg.err.Error()
-		} else {
-			m.statusMsg = ""
+			m.pendingLaunch = nil // the launch failed; nothing will appear to adopt
 		}
+		m.setActionStatus("new", msg.err)
+		return m, nil
+	case killMsg:
+		m.setActionStatus("kill", msg.err)
 		return m, nil
 	case previewMsg:
 		if !m.showPreview {
@@ -305,14 +319,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case sendMsg:
+		// A vanished pane ends passthrough; other errors stay in the mode.
+		if errors.Is(msg.err, terminal.ErrNotFound) {
+			return m.exitPassthrough("send: " + msg.err.Error()), nil
+		}
+		m.setActionStatus("send", msg.err)
 		if msg.err != nil {
-			if errors.Is(msg.err, terminal.ErrNotFound) {
-				return m.exitPassthrough("send: " + msg.err.Error()), nil
-			}
-			m.statusMsg = "send: " + msg.err.Error()
 			return m, nil
 		}
-		m.statusMsg = ""
 		// Re-capture right after the send so the keystroke echoes immediately
 		// rather than waiting up to one passthrough-tick interval. The tick still
 		// covers passive pane updates (e.g. streamed output while you watch).
@@ -329,13 +343,36 @@ func (m *Model) applyLoaded(msg loadedMsg) {
 		return
 	}
 	m.groups = BuildGroups(msg.items)
+	// A refresh that drops the kill target dismisses the confirm: pressing y then
+	// would signal a PID the OS may have recycled to an unrelated process. This
+	// runs before adoption so a refresh that both ends the kill target and reveals
+	// the new session can adopt the same tick rather than deferring one.
+	if m.pendingKill != nil {
+		if _, ok := m.sessionByID(m.pendingKill.id); !ok {
+			m.pendingKill = nil
+		}
+	}
+	// Anchor the cursor onto a just-launched session before rebuilding rows, so
+	// reanchor lands on it.
+	m.adoptLaunchedSession()
 	m.rebuildRows()
+	m.pruneSlept()
 	// A refresh that drops the pinned session ends passthrough: no pane remains
 	// to relay to.
 	if m.inPassthrough() {
 		if _, ok := m.sessionByID(m.passthroughID); !ok {
 			*m = m.exitPassthrough("passthrough: session ended")
 		}
+	}
+}
+
+// setActionStatus reports a one-off action's outcome in the status line: an
+// error under a prefix (e.g. "kill: ...") or a cleared line on success.
+func (m *Model) setActionStatus(prefix string, err error) {
+	if err != nil {
+		m.statusMsg = prefix + ": " + err.Error()
+	} else {
+		m.statusMsg = ""
 	}
 }
 
@@ -393,6 +430,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.inPassthrough() {
 		return m.handlePassthroughKey(msg)
 	}
+	if m.pendingKill != nil {
+		return m.handleKillConfirmKey(msg)
+	}
 	if m.filtering {
 		return m.handleFilterKey(msg)
 	}
@@ -427,6 +467,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.enterPassthrough()
 	case "o":
 		return m.focusSelected()
+	case "n":
+		return m.newSession()
+	case "x":
+		return m.enterKillConfirm()
+	case "s":
+		return m.sleepSelected()
 	case "p":
 		return m.togglePreview()
 	case "r":
