@@ -292,79 +292,62 @@ func TestPreviewPaneFillsHeight(t *testing.T) {
 	}
 }
 
-func TestPreviewReflowsLongLine(t *testing.T) {
+func TestPreviewClipsLongLine(t *testing.T) {
 	m := applyLoad(twoSessionModel())
 	m.cursor = 1 // session s1
 	m.showPreview = true
-	// One logical line wider than the pane's inner width (40 - boxFrameW = 36).
+	// One line wider than the pane's inner width (40 - boxFrameW = 36).
 	long := strings.Repeat("x", 60)
 	next, _ := m.Update(previewMsg{sid: "s1", text: long})
 	m = next.(Model)
 
 	lines := m.renderPreviewPane(40, 5)
-	body := strings.Join(lines, "\n")
-	if strings.Contains(body, "…") {
-		t.Errorf("long line truncated instead of reflowed:\n%s", body)
+	// It clips to a single content row ending in the ellipsis, not wrapped.
+	if !strings.Contains(lines[1], "…") {
+		t.Errorf("clipped row should carry the ellipsis:\n%q", lines[1])
 	}
-	if got := strings.Count(body, "x"); got != 60 {
-		t.Errorf("reflow lost content: got %d x's, want 60:\n%s", got, body)
-	}
-	// 60 chars wrap to a full 36-wide row plus a 24-char remainder.
-	if !strings.Contains(lines[1], strings.Repeat("x", 36)) {
-		t.Errorf("first content row not full width:\n%q", lines[1])
-	}
-	if !strings.Contains(lines[2], strings.Repeat("x", 24)) {
-		t.Errorf("wrap remainder missing on second row:\n%q", lines[2])
+	if strings.Contains(lines[2], "x") {
+		t.Errorf("long line wrapped onto a second row instead of clipping:\n%q", lines[2])
 	}
 }
 
-func TestReflowCarriesColorAcrossWraps(t *testing.T) {
-	// A colored logical line wider than the width keeps its color on the
-	// continuation row: Hardwrap drops the active style, reflow re-emits it.
-	got := reflow([]string{"\x1b[31mhello world\x1b[m"}, 5)
-	if len(got) < 2 {
-		t.Fatalf("expected the line to wrap into rows, got %q", got)
+func TestPreviewClipPreservesStyle(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	styled := "\x1b[31m" + strings.Repeat("x", 60) + "\x1b[m"
+	next, _ := m.Update(previewMsg{sid: "s1", text: styled})
+	m = next.(Model)
+
+	lines := m.renderPreviewPane(40, 3)
+	// One styled row, not wrapped onto a second.
+	if strings.Contains(lines[2], "x") {
+		t.Errorf("styled long line wrapped instead of clipping:\n%q", lines[2])
 	}
-	if !strings.HasPrefix(got[1], "\x1b[31m") {
-		t.Errorf("continuation row lost the color: %q", got[1])
+	// The color is kept, and boxLine resets the pen before the right border so
+	// it cannot bleed into the frame.
+	if !strings.Contains(lines[1], "\x1b[31m") {
+		t.Errorf("clipped row lost its color:\n%q", lines[1])
+	}
+	if !strings.Contains(lines[1], "\x1b[m") {
+		t.Errorf("clipped row not reset before the border:\n%q", lines[1])
 	}
 }
 
-func TestReflowCarriesColonDelimitedSGR(t *testing.T) {
-	// Colon-form SGR (truecolor and styled underlines kitty can emit) must
-	// carry across a wrap too, not just the semicolon form.
-	got := reflow([]string{"\x1b[38:2:255:0:0mhello world\x1b[m"}, 5)
-	if len(got) < 2 {
-		t.Fatalf("expected the line to wrap into rows, got %q", got)
-	}
-	if !strings.HasPrefix(got[1], "\x1b[38:2:255:0:0m") {
-		t.Errorf("continuation row dropped colon-form color: %q", got[1])
-	}
-}
-
-func TestReflowLeavesPlainTextUnstyled(t *testing.T) {
-	// Plain content gets no spurious style prefix on its continuation rows.
-	got := reflow([]string{strings.Repeat("x", 12)}, 5)
-	for i, row := range got {
-		if i > 0 && strings.Contains(row, "\x1b") {
-			t.Errorf("plain continuation row %d got an escape: %q", i, row)
-		}
-	}
-}
-
-func TestPreviewBoxStaysWithinBudgetWhenReflowed(t *testing.T) {
+func TestPreviewClipStaysWithinBudget(t *testing.T) {
 	m := applyLoad(twoSessionModel())
 	m.cursor = 1 // session s1
 	m.showPreview = true
 	m.width, m.height = 50, 60 // stacked (width < splitMinWidth), tall terminal
-	// One long logical line that reflows into far more rows than the stacked
-	// preview's intended budget, but fewer than the short-terminal safety trim.
-	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("y", 2000)})
+	// More captured rows than the stacked budget; each clips to one row, so the
+	// box must still trim to previewSize rather than overflow.
+	text := strings.TrimRight(strings.Repeat("line\n", 100), "\n")
+	next, _ := m.Update(previewMsg{sid: "s1", text: text})
 	m = next.(Model)
 
 	content := len(m.renderPreviewBox(m.width)) - 2 // minus top+bottom borders
 	if budget := m.previewSize(); content > budget {
-		t.Errorf("reflowed box = %d content rows, want <= previewSize %d (list would collapse)", content, budget)
+		t.Errorf("clipped box = %d content rows, want <= previewSize %d", content, budget)
 	}
 }
 
@@ -648,7 +631,7 @@ func TestRepoSelectionKeepsStripe(t *testing.T) {
 
 func TestFooterListsNewKeys(t *testing.T) {
 	m := applyLoad(twoSessionModel())
-	m.width, m.height = 80, 20
+	m.width, m.height = 160, 20 // wide enough that the full footer isn't clipped
 	out := m.View()
 	for _, want := range []string{"x kill", "n new", "s sleep"} {
 		if !strings.Contains(out, want) {

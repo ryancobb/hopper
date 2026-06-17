@@ -82,8 +82,9 @@ func (k *Kitty) Focus(ctx context.Context, h Handle) error {
 
 // Preview returns the last `lines` non-empty logical lines of the window,
 // keeping the pane's ANSI colors. Wrap markers are deliberately omitted: kitty
-// then rejoins soft-wrapped screen rows into one logical line, which the view
-// re-wraps to the preview pane's width instead of the source window's.
+// then rejoins soft-wrapped screen rows into one logical line. The view clips
+// each line to the preview box's width (and pans it horizontally) rather than
+// re-wrapping, so a full-screen capture keeps its column layout.
 func (k *Kitty) Preview(ctx context.Context, h Handle, lines int) (string, error) {
 	id, ok := h.(int)
 	if !ok {

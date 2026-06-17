@@ -118,13 +118,38 @@ func TestNavigationMovesCursor(t *testing.T) {
 	}
 }
 
-func TestCollapseHidesSessions(t *testing.T) {
+func TestFoldHidesSessions(t *testing.T) {
 	m := applyLoad(twoSessionModel())
 	m.cursor = 0 // repo row
-	next, _ := m.Update(key("h"))
+	next, _ := m.Update(key("z"))
 	m = next.(Model)
 	if len(m.rows) != 1 {
-		t.Fatalf("after collapse want 1 row, got %d", len(m.rows))
+		t.Fatalf("after fold want 1 row, got %d", len(m.rows))
+	}
+}
+
+func TestFoldFromSessionCollapsesParent(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1 // a session row
+	next, _ := m.Update(key("z"))
+	m = next.(Model)
+	if len(m.rows) != 1 {
+		t.Fatalf("z on a session should collapse its group, rows=%d", len(m.rows))
+	}
+	if m.rows[m.cursor].Kind != RowRepo {
+		t.Fatalf("cursor should land on the repo header, got kind %v", m.rows[m.cursor].Kind)
+	}
+}
+
+func TestFoldToggleReopens(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 0                  // repo row
+	next, _ := m.Update(key("z")) // collapse
+	m = next.(Model)
+	next, _ = m.Update(key("z")) // expand
+	m = next.(Model)
+	if len(m.rows) != 3 {
+		t.Fatalf("second z should reopen the group, rows=%d", len(m.rows))
 	}
 }
 
@@ -586,5 +611,215 @@ func TestRefreshClampsWhenAnchoredRepoGone(t *testing.T) {
 	// The vanished repo anchor must fall through to clamp, not panic or go out of range.
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
 		t.Fatalf("cursor out of range after anchored repo gone: %d (rows=%d)", m.cursor, len(m.rows))
+	}
+}
+
+func TestPreviewScrollPansRight(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	m.width, m.height = 50, 30 // stacked
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 200)})
+	m = next.(Model)
+
+	if m.previewCol != 0 {
+		t.Fatalf("previewCol should start at 0, got %d", m.previewCol)
+	}
+	next, _ = m.Update(key("l"))
+	m = next.(Model)
+	if m.previewCol != previewScrollStep {
+		t.Fatalf("l should pan right by %d, got %d", previewScrollStep, m.previewCol)
+	}
+	body := strings.Join(m.renderPreviewBox(m.width), "\n")
+	if !strings.Contains(body, "…x") {
+		t.Errorf("scrolled rows should start with the cut ellipsis:\n%s", body)
+	}
+	next, _ = m.Update(key("h"))
+	m = next.(Model)
+	if m.previewCol != 0 {
+		t.Fatalf("h should pan back to 0, got %d", m.previewCol)
+	}
+}
+
+func TestPreviewScrollClampsLow(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	m.width, m.height = 50, 30
+	next, _ := m.Update(previewMsg{sid: "s1", text: "short"})
+	m = next.(Model)
+	next, _ = m.Update(key("h")) // pan left from 0
+	m = next.(Model)
+	if m.previewCol != 0 {
+		t.Fatalf("previewCol should clamp at 0, got %d", m.previewCol)
+	}
+}
+
+func TestPreviewScrollClampsHigh(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	m.width, m.height = 50, 30 // stacked, inner = 50 - boxFrameW = 46
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 50)})
+	m = next.(Model)
+	for i := 0; i < 10; i++ { // many right-pans
+		nx, _ := m.Update(key("l"))
+		m = nx.(Model)
+	}
+	want := m.maxPreviewCol()
+	if want == 0 {
+		t.Fatal("precondition: content is wider than the box, expected a positive max")
+	}
+	if m.previewCol != want {
+		t.Fatalf("previewCol should clamp at maxPreviewCol %d, got %d", want, m.previewCol)
+	}
+}
+
+func TestPreviewScrollResetsOnCursorMove(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	m.width, m.height = 50, 30
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 200)})
+	m = next.(Model)
+	next, _ = m.Update(key("l"))
+	m = next.(Model)
+	if m.previewCol == 0 {
+		t.Fatal("precondition: expected a non-zero scroll")
+	}
+	next, _ = m.Update(key("k")) // move cursor
+	m = next.(Model)
+	if m.previewCol != 0 {
+		t.Fatalf("moving the cursor should reset previewCol, got %d", m.previewCol)
+	}
+}
+
+func TestPreviewScrollSurvivesRefresh(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	m.width, m.height = 50, 30
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 200)})
+	m = next.(Model)
+	next, _ = m.Update(key("l"))
+	m = next.(Model)
+	col := m.previewCol
+	if col == 0 {
+		t.Fatal("precondition: expected a non-zero scroll")
+	}
+	// A fresh capture of the same session must not snap the view back to 0.
+	next, _ = m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 200)})
+	m = next.(Model)
+	if m.previewCol != col {
+		t.Fatalf("refresh should not reset previewCol: was %d, now %d", col, m.previewCol)
+	}
+}
+
+func TestPreviewScrollClampsOnNarrowerRefresh(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	m.width, m.height = 50, 30 // stacked, inner = 50 - boxFrameW = 46
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 200)})
+	m = next.(Model)
+	for i := 0; i < 10; i++ { // pan right
+		nx, _ := m.Update(key("l"))
+		m = nx.(Model)
+	}
+	if m.previewCol == 0 {
+		t.Fatal("precondition: expected a scrolled view")
+	}
+	// A refresh delivers much narrower content; previewCol must clamp to fit it,
+	// landing exactly at the new maxPreviewCol (not 0, not the old offset).
+	next, _ = m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 60)})
+	m = next.(Model)
+	if want := m.maxPreviewCol(); m.previewCol != want {
+		t.Fatalf("previewCol should clamp to maxPreviewCol %d after a narrower refresh, got %d", want, m.previewCol)
+	}
+}
+
+// Folding while scrolled lands the cursor on the repo header, whose preview is
+// the short "select a session" placeholder. The render must clamp the stale
+// offset to that row so the placeholder is not sliced away to a blank box.
+func TestPreviewScrollFoldKeepsPlaceholderVisible(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1 // session row
+	m.showPreview = true
+	m.width, m.height = 50, 30
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 200)})
+	m = next.(Model)
+	for i := 0; i < 5; i++ { // scroll right
+		nx, _ := m.Update(key("l"))
+		m = nx.(Model)
+	}
+	if m.previewCol == 0 {
+		t.Fatal("precondition: expected a scrolled view")
+	}
+	next, _ = m.Update(key("z")) // collapse → cursor lands on the repo header
+	m = next.(Model)
+	body := strings.Join(m.renderPreviewBox(m.width), "\n")
+	if !strings.Contains(body, "select a session") {
+		t.Errorf("folding while scrolled blanked the placeholder:\n%s", body)
+	}
+}
+
+// When the widest captured rows are trimmed out of the visible window (short
+// terminal), scrolling past them must not blank the narrow rows that remain:
+// the render clamps the offset to the rows it actually shows.
+func TestPreviewScrollClampsToVisibleRows(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	m.width, m.height = 50, 22 // small budget: the oldest rows get trimmed off
+	lines := []string{strings.Repeat("W", 300)}
+	for i := 0; i < 40; i++ {
+		lines = append(lines, "narrow")
+	}
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Join(lines, "\n")})
+	m = next.(Model)
+	for i := 0; i < 60; i++ { // scroll far past the visible (narrow) rows
+		nx, _ := m.Update(key("l"))
+		m = nx.(Model)
+	}
+	body := strings.Join(m.renderPreviewBox(m.width), "\n")
+	if !strings.Contains(body, "narrow") {
+		t.Errorf("scrolling past trimmed-off wide rows blanked the visible rows:\n%s", body)
+	}
+}
+
+// At maximum scroll the rightmost column must be visible. The leading "…" marker
+// costs a cell, so maxOffset reserves one extra column; without it the last
+// column is replaced by a trailing "…" that can never be scrolled into view.
+func TestPreviewScrollRevealsRightEdge(t *testing.T) {
+	m := applyLoad(twoSessionModel())
+	m.cursor = 1
+	m.showPreview = true
+	m.width, m.height = 50, 30 // inner = 46
+	next, _ := m.Update(previewMsg{sid: "s1", text: strings.Repeat("x", 44) + "END"})
+	m = next.(Model)
+	for i := 0; i < 20; i++ { // scroll to the far right
+		nx, _ := m.Update(key("l"))
+		m = nx.(Model)
+	}
+	body := strings.Join(m.renderPreviewBox(m.width), "\n")
+	if !strings.Contains(body, "END") {
+		t.Errorf("right edge not reachable at max scroll:\n%s", body)
+	}
+}
+
+func TestPassthroughForwardsScrollKeys(t *testing.T) {
+	m := enteredPassthrough(t) // pane handle 11 cached
+	next, cmd := m.Update(key("l"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("l in passthrough should forward to the pane, not scroll")
+	}
+	cmd()
+	ft := m.term.(*fakeTerm)
+	if len(ft.sent) != 1 || ft.sent[0].data != "l" {
+		t.Fatalf("expected 'l' forwarded to the pane, got %#v", ft.sent)
+	}
+	if m.previewCol != 0 {
+		t.Fatalf("passthrough must not consume the key as scroll, previewCol=%d", m.previewCol)
 	}
 }

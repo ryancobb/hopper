@@ -33,6 +33,7 @@ type Model struct {
 	showPreview bool
 	preview     string
 	previewSID  string // session the preview text was captured from
+	previewCol  int    // leftmost visible preview column (horizontal scroll)
 
 	filtering bool
 	filter    string
@@ -100,6 +101,7 @@ const (
 
 	previewMinLines     = 8
 	previewDefaultLines = 12
+	previewScrollStep   = 8
 )
 
 type tickMsg time.Time
@@ -219,6 +221,12 @@ func (m Model) previewSize() int {
 	return max(n, previewMinLines)
 }
 
+// scrollPreview pans the preview horizontally by delta columns, clamped so the
+// offset never goes negative or past the widest captured row.
+func (m *Model) scrollPreview(delta int) {
+	m.previewCol = max(0, min(m.previewCol+delta, m.maxPreviewCol()))
+}
+
 func (m Model) previewIfOpen() tea.Cmd {
 	if !m.showPreview || m.cursor < 0 || m.cursor >= len(m.rows) {
 		return nil
@@ -317,6 +325,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.preview = msg.text
 		}
+		m.previewCol = min(m.previewCol, m.maxPreviewCol())
 		return m, nil
 	case sendMsg:
 		// A vanished pane ends passthrough; other errors stay in the mode.
@@ -424,6 +433,17 @@ func (m *Model) moveCursor(d int) {
 	m.cursor += d
 	m.clampCursor()
 	m.setAnchor()
+	m.previewCol = 0
+}
+
+// jumpCursor moves the cursor to an absolute row, clamping to range, re-anchoring
+// for the next rebuild, and resetting the horizontal scroll — the shared tail of
+// the g/G jumps so a new cursor target can't forget to zero previewCol.
+func (m *Model) jumpCursor(i int) {
+	m.cursor = i
+	m.clampCursor()
+	m.setAnchor()
+	m.previewCol = 0
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -447,19 +467,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(-1)
 		return m, m.previewIfOpen()
 	case "g":
-		m.cursor = 0
-		m.setAnchor()
+		m.jumpCursor(0)
 		return m, m.previewIfOpen()
 	case "G":
-		m.cursor = len(m.rows) - 1
-		m.clampCursor()
-		m.setAnchor()
+		m.jumpCursor(len(m.rows) - 1)
 		return m, m.previewIfOpen()
-	case "l":
-		m.expand()
+	case "z":
+		m.toggleFold()
 		return m, nil
-	case "h":
-		m.collapse()
+	case "l", "right":
+		m.scrollPreview(previewScrollStep)
+		return m, nil
+	case "h", "left":
+		m.scrollPreview(-previewScrollStep)
 		return m, nil
 	case "enter":
 		return m.activate()
@@ -522,6 +542,7 @@ func (m Model) togglePreview() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.showPreview = !m.showPreview
+	m.previewCol = 0
 	if !m.showPreview {
 		m.preview, m.previewSID = "", ""
 		return m, nil
@@ -554,25 +575,27 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m *Model) expand() {
-	if m.cursor < 0 || m.cursor >= len(m.rows) {
-		return
-	}
-	if r := m.rows[m.cursor]; r.Kind == RowRepo {
-		m.collapsed[r.Group.Key] = false
-		m.rebuildRows()
-		m.setAnchor()
-	}
-}
-
-func (m *Model) collapse() {
+// toggleFold flips the fold of the group under the cursor. On a repo row it
+// toggles that group; on a session row it collapses the parent group and moves
+// the cursor to its header, so folding from inside a group lands on the header
+// that now stands in for it. Enter on a repo row toggles fold too (activate),
+// so z is the explicit key and Enter the incidental one.
+func (m *Model) toggleFold() {
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
 		return
 	}
 	r := m.rows[m.cursor]
-	key := r.Group.Key
+	var key string
 	if r.Kind == RowSession {
 		key = r.Item.Repo.Root
+	} else {
+		key = r.Group.Key
+	}
+	if m.collapsed[key] {
+		m.collapsed[key] = false
+		m.rebuildRows()
+		m.setAnchor()
+		return
 	}
 	m.collapsed[key] = true
 	m.rebuildRows()

@@ -73,9 +73,9 @@ func TestKittyPreviewTail(t *testing.T) {
 }
 
 func TestKittyPreviewCapturesLogicalLines(t *testing.T) {
-	// The preview reflows to the pane width in the view, so the capture must
-	// hand back logical lines: no --add-wrap-markers, letting kitty rejoin
-	// soft-wrapped screen rows into one line we can re-wrap.
+	// The view clips captured lines to the pane width (it no longer re-wraps),
+	// so the capture still hands back logical lines: no --add-wrap-markers,
+	// letting kitty rejoin soft-wrapped screen rows into one line.
 	var calls [][]string
 	k := fakeKitty("one logical line\n", &calls)
 	out, err := k.Preview(context.Background(), 4, 5)

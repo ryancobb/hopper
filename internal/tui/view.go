@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -12,7 +11,7 @@ import (
 	"hopper/internal/status"
 )
 
-const footer = "j/k move · h/l fold · Enter focus · i send · n new · x kill · s sleep · p preview · / filter · r refresh · q quit"
+const footer = "j/k move · h/l scroll · z fold · Enter focus · i send · n new · x kill · s sleep · p preview · / filter · r refresh · q quit"
 
 const defaultWidth = 80
 
@@ -158,7 +157,7 @@ func (m Model) View() string {
 func (m Model) renderSplit(w int) string {
 	listW := sidebarWidth(w) // session-list content width inside the box
 	sw := listW + boxFrameW  // sidebar box width, frame included
-	mainW := max(w-sw-1, 1)  // remaining width, 1 cell for the gap
+	mainW := splitMainWidth(w)
 
 	top := []string{m.renderHeader(w), ""}
 	// Resolve embedded newlines (e.g. a pasted multi-line filter) so the row
@@ -358,12 +357,12 @@ func (m Model) previewContent() (label string, content []string) {
 // capture lands. With no pane content, previewContent supplies a dim
 // "select a session" placeholder.
 func (m Model) renderPreviewBox(w int) []string {
-	label, content := m.previewBody(w)
-	// Reflow can fan one captured line into several rows, so bound the box to
-	// the smaller of two positive limits, keeping the newest rows: the capture
-	// budget (so the list keeps most of the screen) and the short-terminal
-	// safety (room for the list and footer). A non-positive safety limit means
-	// no room to trim, so a lone placeholder line is never silently dropped.
+	label, content := m.previewContent()
+	// Each captured line clips to one row, so bound the box to the smaller of
+	// two positive limits, keeping the newest rows: the capture budget (so the
+	// list keeps most of the screen) and the short-terminal safety (room for the
+	// list and footer). A non-positive safety limit means no room to trim, so a
+	// lone placeholder line is never silently dropped.
 	limit := m.previewSize()
 	if keep := m.height - previewReservedRows; keep > 0 && keep < limit {
 		limit = keep
@@ -371,6 +370,7 @@ func (m Model) renderPreviewBox(w int) []string {
 	if limit > 0 && len(content) > limit {
 		content = content[len(content)-limit:]
 	}
+	content = clipRows(content, m.previewCol, innerWidth(w))
 	return renderBox(label, content, w, 0, false, m.previewBorder())
 }
 
@@ -389,18 +389,12 @@ func (m Model) previewBorder() lipgloss.Style {
 // pane lines are kept and short content is padded with blank rows.
 func (m Model) renderPreviewPane(w, rows int) []string {
 	rows = max(rows, 0)
-	label, content := m.previewBody(w)
+	label, content := m.previewContent()
 	if len(content) > rows {
 		content = content[len(content)-rows:]
 	}
+	content = clipRows(content, m.previewCol, innerWidth(w))
 	return renderBox(label, content, w, rows, true, m.previewBorder())
-}
-
-// previewBody returns the box label and the captured content reflowed to the
-// box's inner width — the shared input to both the stacked box and split pane.
-func (m Model) previewBody(w int) (label string, content []string) {
-	label, content = m.previewContent()
-	return label, reflow(content, innerWidth(w))
 }
 
 // renderBox wraps content in a labeled rounded box at width w, the shared frame
@@ -443,51 +437,44 @@ func boxBottom(w int, border lipgloss.Style) string {
 // once its frame is subtracted.
 func innerWidth(w int) int { return max(w-boxFrameW, 1) }
 
-// sgrPattern matches an SGR escape sequence (ESC [ params m) — the ANSI that
-// sets the visible style a wrap must carry onto the next row. Params allow ':'
-// so colon-delimited forms (truecolor, styled underlines) are tracked too.
-var sgrPattern = regexp.MustCompile("\x1b\\[[0-9;:]*m")
-
-// reflow re-wraps each captured logical line to the pane's inner width, so the
-// preview fills the box rather than keeping the source window's wrapping: long
-// lines wrap onto the next row instead of being truncated, short ones are left
-// as is. Hardwrap drops the active color on continuation rows, so the SGR style
-// open at each wrap point is re-emitted at the start of the next row. Wrapping
-// is cell-aware (wide runes count as two). The cost of filling the width is that
-// a fullscreen-app capture, whose rows sit at absolute columns, will not reflow
-// cleanly — but hopper's typical scrolling output does.
-func reflow(lines []string, width int) []string {
-	width = max(width, 1)
-	var out []string
-	for _, ln := range lines {
-		rows := strings.Split(ansi.Hardwrap(ln, width, false), "\n")
-		style := ""
-		for i, row := range rows {
-			carried := style
-			style = carryStyle(style, row)
-			if i > 0 && carried != "" {
-				row = carried + row
-			}
-			out = append(out, row)
-		}
+// previewInnerWidth is the cell width available for preview content in the
+// current layout, so the scroll clamp and the renderer agree on where rows are
+// cut. It mirrors renderSplit's main-column math.
+func (m Model) previewInnerWidth() int {
+	w := m.contentWidth()
+	if m.useSplit(w) {
+		return innerWidth(splitMainWidth(w))
 	}
-	return out
+	return innerWidth(w)
 }
 
-// carryStyle returns the SGR style in effect at the end of row, given the style
-// active at its start. A bare reset clears it; any other SGR sequence is
-// appended, so replaying the result reproduces the terminal's pen state — an
-// embedded reset in a compound sequence still takes effect on replay.
-func carryStyle(prev, row string) string {
-	style := prev
-	for _, seq := range sgrPattern.FindAllString(row, -1) {
-		if seq == "\x1b[m" || seq == "\x1b[0m" {
-			style = ""
-		} else {
-			style += seq
-		}
+// splitMainWidth is the preview column's box width in the side-by-side layout:
+// the terminal minus the sidebar box and the one-cell gap. renderSplit and
+// previewInnerWidth share it so the clamp and the renderer use one formula.
+func splitMainWidth(w int) int {
+	return max(w-(sidebarWidth(w)+boxFrameW)-1, 1)
+}
+
+// maxPreviewCol is the furthest right the preview can scroll, used to bound the
+// stored scroll offset. The renderer re-clamps against the rows it actually
+// shows, so this is only the keypress ceiling.
+func (m Model) maxPreviewCol() int {
+	_, content := m.previewContent()
+	return maxOffset(content, m.previewInnerWidth())
+}
+
+// maxOffset is the furthest these rows can scroll right: the widest row minus
+// the visible width, plus one cell for the leading "…" marker so the rightmost
+// column stays reachable at full scroll. Rows that already fit yield 0.
+func maxOffset(rows []string, inner int) int {
+	widest := 0
+	for _, ln := range rows {
+		widest = max(widest, lipgloss.Width(ln))
 	}
-	return style
+	if widest <= inner {
+		return 0
+	}
+	return widest - inner + 1
 }
 
 // boxLine renders one content line between the box borders. Captured pane
@@ -500,6 +487,34 @@ func boxLine(ln string, w int, border lipgloss.Style) string {
 	pad := max(inner-lipgloss.Width(ln), 0)
 	return border.Render("│") + " " + ln + ansi.ResetStyle +
 		strings.Repeat(" ", pad) + " " + border.Render("│")
+}
+
+// clipRow drops the first off columns of a captured row so the preview can pan
+// right, marking the cut with a leading "…". boxLine clips the right edge, so
+// together they bound the row to the visible window. ansi.TruncateLeft re-emits
+// the SGR style open at the cut, so color survives the slice. off <= 0 is a
+// no-op (the unscrolled, plain-clip case).
+func clipRow(ln string, off int) string {
+	if off <= 0 {
+		return ln
+	}
+	return ansi.TruncateLeft(ln, off, "…")
+}
+
+// clipRows clips every row to the horizontal window, with off clamped to these
+// rows' own maxOffset (inner = the box's content width) so the offset can never
+// exceed the visible content — which would otherwise blank every row, e.g. when
+// a stale scroll position outlives the wide capture that justified it.
+func clipRows(rows []string, off, inner int) []string {
+	off = min(off, maxOffset(rows, inner))
+	if off <= 0 {
+		return rows
+	}
+	out := make([]string, len(rows))
+	for i, ln := range rows {
+		out[i] = clipRow(ln, off)
+	}
+	return out
 }
 
 // clampToCursor trims lines to at most budget, sliding the window only as
