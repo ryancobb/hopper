@@ -25,6 +25,8 @@ func keyToBytes(msg tea.KeyMsg) (string, bool) {
 		return "\r", true
 	case tea.KeyTab:
 		return "\t", true
+	case tea.KeyShiftTab:
+		return "\x1b[Z", true
 	case tea.KeyBackspace:
 		return "\x7f", true
 	case tea.KeyEsc:

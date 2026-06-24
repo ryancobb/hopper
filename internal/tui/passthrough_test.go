@@ -297,6 +297,7 @@ func TestKeyToBytes(t *testing.T) {
 		{"space", tea.KeyMsg{Type: tea.KeySpace}, " ", true},
 		{"enter", tea.KeyMsg{Type: tea.KeyEnter}, "\r", true},
 		{"tab", tea.KeyMsg{Type: tea.KeyTab}, "\t", true},
+		{"shift+tab", tea.KeyMsg{Type: tea.KeyShiftTab}, "\x1b[Z", true},
 		{"backspace", tea.KeyMsg{Type: tea.KeyBackspace}, "\x7f", true},
 		{"esc", tea.KeyMsg{Type: tea.KeyEsc}, "\x1b", true},
 		{"up", tea.KeyMsg{Type: tea.KeyUp}, "\x1b[A", true},
