@@ -353,7 +353,7 @@ func TestPreviewPanelBoxed(t *testing.T) {
 	m = next.(Model)
 
 	out := m.View()
-	if !strings.Contains(out, "╭─ preview · s1 (aaa) ") {
+	if !strings.Contains(out, "╭─ first - s1 ") {
 		t.Errorf("missing top border with embedded label:\n%s", out)
 	}
 	if !strings.Contains(out, "\n\n╭") {
@@ -394,7 +394,7 @@ func TestPreviewPanelBoxed(t *testing.T) {
 func TestBoxTopWideRunesStayInWidth(t *testing.T) {
 	// Rune count and cell width disagree for CJK names; the top border must
 	// be measured in cells or it overflows and the ╮ corner gets clipped.
-	top := boxTop("preview · abcd (日本語のリポジトリ名)", 30, st.meta)
+	top := boxTop("日本語のセッション名 - abcd", 30, st.meta)
 	if w := lipgloss.Width(top); w != 30 {
 		t.Errorf("CJK label top border width = %d, want 30: %q", w, top)
 	}

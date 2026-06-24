@@ -322,12 +322,14 @@ const (
 	previewReservedRows = 9
 )
 
-// previewContent returns the box label and the pane lines to display. Pane
-// lines are present only when the capture belongs to the session being shown;
-// otherwise (repo row, or a capture still in flight) a single dim "select a
-// session" placeholder stands in. During passthrough the preview is locked to
-// the pinned session, independent of the cursor.
-func (m Model) previewContent() (label string, content []string) {
+// previewContent returns the box label and the pane lines to display. labelW is
+// the label's cell budget (see labelBudget), used to fit the title beside the
+// id; pass 0 when the label is unused. Pane lines are present only when the
+// capture belongs to the session being shown; otherwise (repo row, or a capture
+// still in flight) a single dim "select a session" placeholder stands in.
+// During passthrough the preview is locked to the pinned session, independent
+// of the cursor.
+func (m Model) previewContent(labelW int) (label string, content []string) {
 	label = "preview"
 	sid := ""
 	switch {
@@ -337,7 +339,7 @@ func (m Model) previewContent() (label string, content []string) {
 	default:
 		if sel := m.selectedItem(); sel != nil {
 			sid = sel.Session.ID
-			label = fmt.Sprintf("preview · %s (%s)", short(sel.Session.ID), sel.Repo.Name)
+			label = previewLabel(sel.Session.Name, sel.Session.ID, labelW)
 		}
 	}
 	if sid != "" && m.preview != "" && m.previewSID == sid {
@@ -357,7 +359,7 @@ func (m Model) previewContent() (label string, content []string) {
 // capture lands. With no pane content, previewContent supplies a dim
 // "select a session" placeholder.
 func (m Model) renderPreviewBox(w int) []string {
-	label, content := m.previewContent()
+	label, content := m.previewContent(labelBudget(w))
 	// Each captured line clips to one row, so bound the box to the smaller of
 	// two positive limits, keeping the newest rows: the capture budget (so the
 	// list keeps most of the screen) and the short-terminal safety (room for the
@@ -389,7 +391,7 @@ func (m Model) previewBorder() lipgloss.Style {
 // pane lines are kept and short content is padded with blank rows.
 func (m Model) renderPreviewPane(w, rows int) []string {
 	rows = max(rows, 0)
-	label, content := m.previewContent()
+	label, content := m.previewContent(labelBudget(w))
 	if len(content) > rows {
 		content = content[len(content)-rows:]
 	}
@@ -420,14 +422,19 @@ func renderBox(label string, content []string, w, rows int, pad bool, border lip
 }
 
 // boxTop renders the box's top border with the label embedded:
-// "╭─ preview · a1b2 (repo) ────╮". Frame in the border style, label plain. The
+// "╭─ title - a1b2 ────╮". Frame in the border style, label plain. The
 // label is clipped by cell width (not runes) so wide characters cannot push the
 // border past w.
 func boxTop(label string, w int, border lipgloss.Style) string {
-	label = ansi.Truncate(label, max(w-boxLabelAffixW-1, 1), "…")
+	label = ansi.Truncate(label, labelBudget(w), "…")
 	fill := max(w-boxLabelAffixW-lipgloss.Width(label), 0)
 	return border.Render("╭─ ") + label + border.Render(" "+strings.Repeat("─", fill)+"╮")
 }
+
+// labelBudget is the cell width available for a box's embedded label at box
+// width w: boxTop reserves boxLabelAffixW frame cells plus one trailing space.
+// previewLabel fits its title to this so the trailing id survives clipping.
+func labelBudget(w int) int { return max(w-boxLabelAffixW-1, 1) }
 
 func boxBottom(w int, border lipgloss.Style) string {
 	return border.Render("╰" + strings.Repeat("─", max(w-2, 0)) + "╯")
@@ -459,7 +466,7 @@ func splitMainWidth(w int) int {
 // stored scroll offset. The renderer re-clamps against the rows it actually
 // shows, so this is only the keypress ceiling.
 func (m Model) maxPreviewCol() int {
-	_, content := m.previewContent()
+	_, content := m.previewContent(0) // label unused here
 	return maxOffset(content, m.previewInnerWidth())
 }
 
@@ -667,6 +674,26 @@ func groupHasBlocked(g Group) bool {
 		}
 	}
 	return false
+}
+
+// previewLabel builds the preview box title as "title - id", where title is the
+// session's provider name (e.g. the Claude Code title) and id is the short
+// session id. The title is truncated to width (not the id), so the
+// disambiguating id stays visible when the box is narrow. A session with no
+// real title has its name defaulted to an id prefix at the source, so an empty
+// name or one that is a prefix of the full id shows just the short id rather
+// than doubling it ("a1b2c3d4 - a1b2").
+func previewLabel(name, id string, width int) string {
+	sid := short(id)
+	if name == "" || strings.HasPrefix(id, name) {
+		return sid
+	}
+	suffix := " - " + sid
+	room := width - lipgloss.Width(suffix)
+	if room < 1 {
+		return sid
+	}
+	return ansi.Truncate(name, room, "…") + suffix
 }
 
 func short(id string) string {

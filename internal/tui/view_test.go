@@ -276,7 +276,7 @@ func TestPreviewPaneFillsHeight(t *testing.T) {
 	if len(lines) != 7 {
 		t.Fatalf("pane height = %d, want 7 (5 content + 2 borders)", len(lines))
 	}
-	if !strings.HasPrefix(lines[0], "╭─ preview · s1 (aaa)") {
+	if !strings.HasPrefix(lines[0], "╭─ first - s1") {
 		t.Errorf("top border/label wrong: %q", lines[0])
 	}
 	if !strings.HasSuffix(lines[len(lines)-1], "╯") {
@@ -354,12 +354,46 @@ func TestPreviewClipStaysWithinBudget(t *testing.T) {
 func TestPreviewContentPlaceholder(t *testing.T) {
 	m := applyLoad(twoSessionModel())
 	m.cursor = 0 // repo row: no session selected
-	label, content := m.previewContent()
+	label, content := m.previewContent(labelBudget(40))
 	if label != "preview" {
 		t.Errorf("label on repo row = %q, want \"preview\"", label)
 	}
 	if len(content) != 1 || !strings.Contains(content[0], "select a session") {
 		t.Errorf("placeholder content = %q, want [\"select a session\"]", content)
+	}
+}
+
+func TestPreviewLabel(t *testing.T) {
+	cases := []struct {
+		desc, name, id string
+		width          int
+		want           string
+	}{
+		{"titled fits", "fix the parser", "a1b2c3d4e5f6", 40, "fix the parser - a1b2"},
+		// No title: the source defaults the name to an id prefix, which carries no
+		// more than the id, so the label shows the short id once (not doubled).
+		{"empty name", "", "a1b2c3d4e5f6", 40, "a1b2"},
+		{"id-prefix name", "a1b2c3d4", "a1b2c3d4e5f6", 40, "a1b2"},
+	}
+	for _, c := range cases {
+		if got := previewLabel(c.name, c.id, c.width); got != c.want {
+			t.Errorf("%s: previewLabel(%q,%q,%d)=%q want %q", c.desc, c.name, c.id, c.width, got, c.want)
+		}
+	}
+}
+
+func TestPreviewLabelTruncatesTitleNotID(t *testing.T) {
+	// A long title on a narrow box truncates the title but keeps the id suffix:
+	// the id is the disambiguator, so it must survive clipping.
+	got := previewLabel("a really long session title that overflows", "a1b2c3d4", 20)
+	if !strings.HasSuffix(got, " - a1b2") {
+		t.Errorf("label = %q, want it to keep the %q id suffix", got, " - a1b2")
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("label = %q, want the title truncated with an ellipsis", got)
+	}
+	if w := lipgloss.Width(got); w > 20 {
+		t.Errorf("label width = %d, want <= 20: %q", w, got)
 	}
 }
 
@@ -402,7 +436,7 @@ func TestSplitLayoutSideBySide(t *testing.T) {
 	if !sideBySide {
 		t.Fatalf("expected sidebar session beside the preview:\n%s", out)
 	}
-	if !strings.Contains(out, "preview · s1 (aaa)") {
+	if !strings.Contains(out, "first - s1") {
 		t.Fatalf("preview pane label missing:\n%s", out)
 	}
 	if !strings.Contains(out, "pane content") {
